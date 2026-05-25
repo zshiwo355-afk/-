@@ -1,0 +1,10 @@
+.venv/
+.env
+.env.local
+backend/config.local.json
+backend/data/uploads/
+backend/data/jobs/
+backend/data/outputs/
+__pycache__/
+node_modules/
+dist/
