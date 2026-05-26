@@ -1,6 +1,7 @@
 .venv/
 .env
 .env.local
+tmp*/
 backend/config.local.json
 backend/data/uploads/
 backend/data/jobs/
