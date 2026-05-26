@@ -9,13 +9,16 @@ export default function ProgressPanel({
   const progress = job?.total_segments
     ? Math.round((job.completed_segments / job.total_segments) * 100)
     : 0;
+  const completedMessage = job?.status === 'completed'
+    ? `翻译完成：${job.completed_segments || 0} / ${job.total_segments || 0}`
+    : statusMessage || '等待任务开始';
 
   return (
     <section className="progress-card">
       <div className="progress-head">
         <div>
           <h2>任务状态</h2>
-          <p>{statusMessage || '等待任务开始'}</p>
+          <p>{completedMessage}</p>
         </div>
         <div className="progress-pill">{job?.status || 'pending'}</div>
       </div>

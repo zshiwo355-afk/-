@@ -1,11 +1,99 @@
 from __future__ import annotations
 
-import json
+import re
+import shutil
 
 import aiofiles
 
 from backend.translator.storage import FileStorage
 from backend.translator.validator import ChunkRecord, JobRecord, SegmentRecord
+
+
+FINAL_OUTPUT_FILES = {"translated.txt", "translated.md", "bilingual.txt", "bilingual.md"}
+
+XML_CLEANUP_PATTERNS = [
+    re.compile(r"```(?:xml|html)?\s*", re.IGNORECASE),
+    re.compile(r"```"),
+    re.compile(r"</?translation\s*>", re.IGNORECASE),
+    re.compile(r"<segment\b[^>]*>", re.IGNORECASE),
+    re.compile(r"</segment\s*>", re.IGNORECASE),
+]
+
+
+def clean_translation_text(text: str) -> str:
+    cleaned = text or ""
+    for pattern in XML_CLEANUP_PATTERNS:
+        cleaned = pattern.sub("", cleaned)
+    return cleaned.strip()
+
+
+def _successful_segments(segments: list[SegmentRecord]) -> list[SegmentRecord]:
+    return sorted((segment for segment in segments if segment.status == "success"), key=lambda item: item.order)
+
+
+def _build_translated_text(segments: list[SegmentRecord]) -> str:
+    return "\n\n".join(clean_translation_text(segment.translated_text) for segment in segments if segment.translated_text.strip())
+
+
+def _build_bilingual_text(segments: list[SegmentRecord]) -> str:
+    parts = []
+    for segment in segments:
+        parts.append(
+            "\n".join(
+                [
+                    "【原文】",
+                    segment.source_text.strip(),
+                    "",
+                    "【译文】",
+                    clean_translation_text(segment.translated_text),
+                ]
+            )
+        )
+    return "\n\n----------------------------------------\n\n".join(parts)
+
+
+def _build_bilingual_markdown(segments: list[SegmentRecord]) -> str:
+    parts = []
+    for segment in segments:
+        parts.append(
+            "\n".join(
+                [
+                    f"## {segment.segment_id.upper()}",
+                    "",
+                    "**原文**",
+                    "",
+                    segment.source_text.strip(),
+                    "",
+                    "**译文**",
+                    "",
+                    clean_translation_text(segment.translated_text),
+                ]
+            )
+        )
+    return "\n\n---\n\n".join(parts)
+
+
+def _clean_outputs_dir(storage: FileStorage, job_id: str) -> None:
+    outputs_dir = storage.job_outputs_dir(job_id)
+    debug_dir = storage.job_dir(job_id) / "debug"
+    outputs_dir.mkdir(parents=True, exist_ok=True)
+    debug_dir.mkdir(parents=True, exist_ok=True)
+    for path in outputs_dir.iterdir():
+        if path.name in FINAL_OUTPUT_FILES:
+            continue
+        target = debug_dir / path.name
+        try:
+            if target.exists():
+                if target.is_dir():
+                    shutil.rmtree(target)
+                else:
+                    target.unlink()
+            shutil.move(str(path), str(target))
+        except Exception:
+            if path.is_dir():
+                shutil.rmtree(path, ignore_errors=True)
+            else:
+                path.unlink(missing_ok=True)
 
 
 async def export_outputs(
@@ -14,63 +102,27 @@ async def export_outputs(
     segments: list[SegmentRecord],
     chunks: list[ChunkRecord],
 ) -> None:
+    if job.status != "completed":
+        return
+    if job.completed_segments != job.total_segments or job.failed_segments != 0:
+        raise RuntimeError("任务未完成，不能导出最终文件")
+
     outputs_dir = storage.job_outputs_dir(job.job_id)
     outputs_dir.mkdir(parents=True, exist_ok=True)
+    _clean_outputs_dir(storage, job.job_id)
 
-    translated_md = "\n\n".join(segment.translated_text or "等待翻译" for segment in segments)
-    bilingual_md_parts = []
-    for segment in segments:
-        bilingual_md_parts.append(
-            "\n".join(
-                [
-                    f"## {segment.segment_id}",
-                    "",
-                    "### Source",
-                    segment.source_text,
-                    "",
-                    "### Translation",
-                    segment.translated_text or "等待翻译",
-                ]
-            )
-        )
-    bilingual_md = "\n\n---\n\n".join(bilingual_md_parts)
+    final_segments = _successful_segments(segments)
+    translated_text = _build_translated_text(final_segments)
+    bilingual_text = _build_bilingual_text(final_segments)
+    bilingual_markdown = _build_bilingual_markdown(final_segments)
 
-    aligned_lines = [
-        json.dumps(
-            {
-                "segment_id": segment.segment_id,
-                "chapter_title": segment.chapter_title,
-                "source_text": segment.source_text,
-                "translated_text": segment.translated_text,
-                "status": segment.status,
-                "chunk_id": segment.chunk_id,
-                "summary": segment.summary,
-                "terms": segment.terms,
-                "error": segment.error,
-            },
-            ensure_ascii=False,
-        )
-        for segment in segments
-    ]
+    async with aiofiles.open(outputs_dir / "translated.txt", "w", encoding="utf-8-sig", newline="\n") as file:
+        await file.write(translated_text)
+    async with aiofiles.open(outputs_dir / "translated.md", "w", encoding="utf-8", newline="\n") as file:
+        await file.write(translated_text)
+    async with aiofiles.open(outputs_dir / "bilingual.txt", "w", encoding="utf-8-sig", newline="\n") as file:
+        await file.write(bilingual_text)
+    async with aiofiles.open(outputs_dir / "bilingual.md", "w", encoding="utf-8", newline="\n") as file:
+        await file.write(bilingual_markdown)
 
-    existing_entries = []
-    log_path = storage.translation_log_path(job.job_id)
-    if log_path.exists():
-        async with aiofiles.open(log_path, "r", encoding="utf-8") as file:
-            content = await file.read()
-            existing_entries = json.loads(content) if content.strip() else []
-
-    translation_log = {
-        "job": job.model_dump(),
-        "chunks": [chunk.model_dump() for chunk in chunks],
-        "events": existing_entries,
-    }
-
-    async with aiofiles.open(outputs_dir / "translated.md", "w", encoding="utf-8") as file:
-        await file.write(translated_md)
-    async with aiofiles.open(outputs_dir / "bilingual.md", "w", encoding="utf-8") as file:
-        await file.write(bilingual_md)
-    async with aiofiles.open(outputs_dir / "aligned.jsonl", "w", encoding="utf-8") as file:
-        await file.write("\n".join(aligned_lines))
-    async with aiofiles.open(outputs_dir / "translation_log.json", "w", encoding="utf-8") as file:
-        await file.write(json.dumps(translation_log, ensure_ascii=False, indent=2))
+    _clean_outputs_dir(storage, job.job_id)

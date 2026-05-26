@@ -1,11 +1,17 @@
 {
-  "tokenhub_api_key": "请在 config.local.json 中填写真实 API Key",
+  "tokenhub_api_key": "",
   "tokenhub_base_url": "https://tokenhub.tencentmaas.com/v1",
   "model": "hy-mt2-pro",
   "default_target_language": "简体中文",
   "temperature": 0.1,
-  "stream": true,
+  "stream": false,
   "chunk_size_chars": 3500,
-  "max_retries": 3
+  "max_retries": 3,
+  "request_timeout_seconds": 180,
+  "stream_timeout_seconds": 180,
+  "stream_fallback": true,
+  "max_segments_per_chunk": 5,
+  "min_chars_for_standalone_chunk": 300,
+  "merge_tiny_chapter_segments": true,
+  "speed_mode": "stable"
 }
-

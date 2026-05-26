@@ -16,6 +16,16 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def ensure_list(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, dict):
+        return list(value.values())
+    return [value]
+
+
 class JobConfigSnapshot(BaseModel):
     model: str
     temperature: float
@@ -24,6 +34,20 @@ class JobConfigSnapshot(BaseModel):
     max_retries: int
     target_language: str
     translation_mode: str = "忠实翻译"
+    corpus_id: str = "default"
+    use_corpus: bool = True
+    use_glossary: bool = True
+    use_style_examples: bool = True
+    use_domain_prompt: bool = True
+    translate_mode: str = "psychology"
+    translation_level: int = 3
+    request_timeout_seconds: int = 180
+    stream_timeout_seconds: int = 180
+    stream_fallback: bool = True
+    max_segments_per_chunk: int = 5
+    min_chars_for_standalone_chunk: int = 300
+    merge_tiny_chapter_segments: bool = True
+    speed_mode: str = "stable"
 
 
 class SegmentRecord(BaseModel):
@@ -54,6 +78,8 @@ class ChunkRecord(BaseModel):
     completed_at: str | None = None
     response_text: str = ""
     stream_fallback_used: bool = False
+    used_terms: list[dict[str, Any]] = Field(default_factory=list)
+    used_examples: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class JobRecord(BaseModel):
@@ -71,6 +97,9 @@ class JobRecord(BaseModel):
     current_segment_id: str = ""
     current_chapter: str = ""
     last_error: str = ""
+    pause_requested: bool = False
+    cancel_requested: bool = False
+    last_run_heartbeat_at: str = ""
     created_at: str = Field(default_factory=utc_now_iso)
     updated_at: str = Field(default_factory=utc_now_iso)
     config: JobConfigSnapshot
@@ -100,3 +129,9 @@ class TranslationAuthError(Exception):
     def __init__(self, message: str, raw_error: str = ""):
         super().__init__(message)
         self.raw_error = raw_error or message
+
+
+class TranslationTimeoutError(Exception):
+    def __init__(self, message: str, timeout_seconds: int = 0):
+        super().__init__(message)
+        self.timeout_seconds = timeout_seconds

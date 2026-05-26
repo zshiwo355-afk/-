@@ -5,4 +5,5 @@ python-multipart
 pydantic
 sse-starlette
 aiofiles
+python-dotenv
 

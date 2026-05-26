@@ -7,6 +7,14 @@ export async function uploadJob(file, options) {
   formData.append('translation_mode', options.translationMode);
   formData.append('stream', String(options.stream));
   formData.append('chunk_size_chars', String(options.chunkSizeChars));
+  formData.append('corpus_id', options.corpusId);
+  formData.append('use_corpus', String(options.useCorpus));
+  formData.append('use_glossary', String(options.useGlossary));
+  formData.append('use_style_examples', String(options.useStyleExamples));
+  formData.append('use_domain_prompt', String(options.useDomainPrompt));
+  formData.append('translate_mode', options.translateMode);
+  formData.append('translation_level', String(options.translationLevel));
+  formData.append('speed_mode', options.speedMode || 'stable');
 
   const response = await fetch(`${API_BASE}/api/jobs/upload`, {
     method: 'POST',
@@ -19,9 +27,14 @@ export async function uploadJob(file, options) {
   return response.json();
 }
 
-export async function postJobAction(jobId, action) {
+export async function postJobAction(jobId, action, payload = null, options = {}) {
+  if (action === 'pause') {
+    console.trace('[api] pause called', { jobId, body: payload });
+  }
   const response = await fetch(`${API_BASE}/api/jobs/${jobId}/${action}`, {
     method: 'POST',
+    headers: payload ? { 'Content-Type': 'application/json', ...(options.headers || {}) } : options.headers,
+    body: payload ? JSON.stringify(payload) : undefined,
   });
   if (!response.ok) {
     throw new Error(await response.text());
@@ -81,4 +94,43 @@ export function openJobEvents(jobId, handlers) {
 export function buildDownloadUrl(jobId, fileType) {
   return `${API_BASE}/api/jobs/${jobId}/download/${fileType}`;
 }
+
+async function requestJson(url, options = {}) {
+  const response = await fetch(`${API_BASE}${url}`, {
+    headers: options.body instanceof FormData ? undefined : { 'Content-Type': 'application/json' },
+    ...options,
+  });
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
+  return response.json();
+}
+
+export const corpusApi = {
+  list: () => requestJson('/api/corpus'),
+  get: (id) => requestJson(`/api/corpus/${id}`),
+  create: (payload) => requestJson('/api/corpus', { method: 'POST', body: JSON.stringify(payload) }),
+  save: (id, payload) => requestJson(`/api/corpus/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
+  deleteCorpus: (id) => requestJson(`/api/corpus/${id}`, { method: 'DELETE' }),
+  updateDomainPrompt: (id, domainPrompt) =>
+    requestJson(`/api/corpus/${id}/domain-prompt`, {
+      method: 'PUT',
+      body: JSON.stringify({ domain_prompt: domainPrompt }),
+    }),
+  addTerm: (id, payload) => requestJson(`/api/corpus/${id}/glossary`, { method: 'POST', body: JSON.stringify(payload) }),
+  updateTerm: (id, termId, payload) =>
+    requestJson(`/api/corpus/${id}/glossary/${termId}`, { method: 'PUT', body: JSON.stringify(payload) }),
+  deleteTerm: (id, termId) => requestJson(`/api/corpus/${id}/glossary/${termId}`, { method: 'DELETE' }),
+  addExample: (id, payload) => requestJson(`/api/corpus/${id}/examples`, { method: 'POST', body: JSON.stringify(payload) }),
+  updateExample: (id, exampleId, payload) =>
+    requestJson(`/api/corpus/${id}/examples/${exampleId}`, { method: 'PUT', body: JSON.stringify(payload) }),
+  deleteExample: (id, exampleId) => requestJson(`/api/corpus/${id}/examples/${exampleId}`, { method: 'DELETE' }),
+  exportUrl: (id) => `${API_BASE}/api/corpus/${id}/export`,
+  import: (id, file) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return requestJson(`/api/corpus/${id}/import`, { method: 'POST', body: formData });
+  },
+  importJson: (payload) => requestJson('/api/corpus/import-json', { method: 'POST', body: JSON.stringify(payload) }),
+};
 

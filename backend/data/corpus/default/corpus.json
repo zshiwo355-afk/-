@@ -1,0 +1,208 @@
+{
+  "id": "default",
+  "name": "The Ultimate Guide to Kink 翻译语料库",
+  "description": "专为《The Ultimate Guide to Kink: BDSM, Role Play and the Erotic Edge》（Tristan Taormino 主编）设计的专业翻译语料库。涵盖广泛的 BDSM、各种性癖、角色扮演、边缘玩法、心理探索等内容。",
+  "domain_prompt": "这是一本全面的 Kink/BDSM 指南书籍，涉及 BDSM、各种性癖（fetish/kink）、角色扮演、权力交换、边缘玩法（edge play）、亲密关系、性探索、安全实践、同意文化等主题。翻译时要保持专业、开放、中性且赋权的语气，像高质量的中文性学或亲密关系书籍。避免刑事化或病态化表达，注重多样性、合意与安全探索。",
+  "glossary": [
+    {
+      "id": "term_001",
+      "source": "kink",
+      "target": "性癖",
+      "note": "本书核心词汇，指非主流的性偏好或性实践，保持中性正面。",
+      "enabled": true
+    },
+    {
+      "id": "term_002",
+      "source": "BDSM",
+      "target": "BDSM",
+      "note": "保留缩写，不要拆译。",
+      "enabled": true
+    },
+    {
+      "id": "term_003",
+      "source": "role play",
+      "target": "角色扮演",
+      "note": "本书重要主题，保持统一。",
+      "enabled": true
+    },
+    {
+      "id": "term_004",
+      "source": "erotic edge",
+      "target": "情欲边缘",
+      "note": "指探索性欲极限的玩法，可译为「情欲边缘」或保留英文。",
+      "enabled": true
+    },
+    {
+      "id": "term_005",
+      "source": "edge play",
+      "target": "边缘玩法",
+      "note": "高风险或高强度 BDSM 玩法，强调风险意识。",
+      "enabled": true
+    },
+    {
+      "id": "term_006",
+      "source": "top",
+      "target": "支配方",
+      "note": "BDSM 语境，推荐「支配方 / Top」。",
+      "enabled": true
+    },
+    {
+      "id": "term_007",
+      "source": "bottom",
+      "target": "承受方",
+      "note": "BDSM 语境，推荐「承受方 / Bottom」。",
+      "enabled": true
+    },
+    {
+      "id": "term_008",
+      "source": "dominant",
+      "target": "支配者",
+      "note": "可简称为 Dom。",
+      "enabled": true
+    },
+    {
+      "id": "term_009",
+      "source": "submissive",
+      "target": "顺从者",
+      "note": "可简称为 sub。",
+      "enabled": true
+    },
+    {
+      "id": "term_010",
+      "source": "consent",
+      "target": "合意",
+      "note": "本书核心原则，优先使用「合意」。",
+      "enabled": true
+    },
+    {
+      "id": "term_011",
+      "source": "power exchange",
+      "target": "权力交换",
+      "note": "核心概念。",
+      "enabled": true
+    },
+    {
+      "id": "term_012",
+      "source": "scene",
+      "target": "场景",
+      "note": "一次约定的 BDSM/ kink 互动。",
+      "enabled": true
+    },
+    {
+      "id": "term_013",
+      "source": "aftercare",
+      "target": "后戏护理",
+      "note": "非常重要，保持统一。",
+      "enabled": true
+    },
+    {
+      "id": "term_014",
+      "source": "negotiation",
+      "target": "协商",
+      "note": "玩法前的详细协商。",
+      "enabled": true
+    },
+    {
+      "id": "term_015",
+      "source": "safe word",
+      "target": "安全词",
+      "note": "停止信号。",
+      "enabled": true
+    },
+    {
+      "id": "term_016",
+      "source": "limit",
+      "target": "底线",
+      "note": "hard limit（硬底线）、soft limit（软底线）。",
+      "enabled": true
+    },
+    {
+      "id": "term_017",
+      "source": "fetish",
+      "target": "恋物癖",
+      "note": "对特定物体或部位的强烈性偏好。",
+      "enabled": true
+    },
+    {
+      "id": "term_018",
+      "source": "headspace",
+      "target": "心境",
+      "note": "进入特定心理状态。",
+      "enabled": true
+    },
+    {
+      "id": "term_019",
+      "source": "subspace",
+      "target": "臣服空间",
+      "note": "也可译为「飞升状态」。",
+      "enabled": true
+    },
+    {
+      "id": "term_020",
+      "source": "drop",
+      "target": "情绪回落",
+      "note": "玩法后情绪低落。",
+      "enabled": true
+    },
+    {
+      "id": "term_021",
+      "source": "play",
+      "target": "玩法",
+      "note": "泛指 kink / BDSM 活动。",
+      "enabled": true
+    },
+    {
+      "id": "term_022",
+      "source": "intimacy",
+      "target": "亲密",
+      "note": "情感与身体的深度联结。",
+      "enabled": true
+    },
+    {
+      "id": "term_023",
+      "source": "vulnerability",
+      "target": "脆弱",
+      "note": "正面、被尊重的脆弱感。",
+      "enabled": true
+    },
+    {
+      "id": "term_024",
+      "source": "shame",
+      "target": "羞耻",
+      "note": "心理学语境，保持「羞耻」。",
+      "enabled": true
+    },
+    {
+      "id": "term_025",
+      "source": "erotic",
+      "target": "情欲的",
+      "note": "感官与性唤起相关的。",
+      "enabled": true
+    }
+  ],
+  "style_examples": [
+    {
+      "id": "ex_001",
+      "source": "Exploring the erotic edge requires deep trust and clear communication.",
+      "target": "探索情欲边缘需要深度的信任和清晰的沟通。",
+      "note": "体现本书开放探索的语气。",
+      "enabled": true
+    },
+    {
+      "id": "ex_002",
+      "source": "Kink is not about abuse; it's about consensual power exchange.",
+      "target": "性癖并非虐待，而是基于合意的权力交换。",
+      "note": "强调同意与合意，避免负面化。",
+      "enabled": true
+    },
+    {
+      "id": "ex_003",
+      "source": "Different roles allow us to explore different parts of ourselves.",
+      "target": "不同的角色扮演让我们能够探索自我的不同面向。",
+      "note": "心理学探索的正面语气。",
+      "enabled": true
+    }
+  ],
+  "created_at": "2026-05-25T23:00:00",
+  "updated_at": "2026-05-25T15:59:30.348204+00:00"
+}

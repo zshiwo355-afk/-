@@ -2,10 +2,18 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import sys
 from pathlib import Path
 
 from backend.translator.pipeline import EventBroker, TranslationPipeline
 from backend.translator.storage import FileStorage
+
+
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+except Exception:
+    pass
 
 
 async def find_resume_job(storage: FileStorage, source_path: str) -> str | None:
@@ -88,7 +96,7 @@ def build_parser() -> argparse.ArgumentParser:
     translate.add_argument(
         "--stream",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=False,
         help="Enable or disable model streaming",
     )
     return parser

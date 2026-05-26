@@ -247,6 +247,122 @@ select {
   margin-bottom: 16px;
 }
 
+.corpus-panel {
+  margin-bottom: 16px;
+}
+
+.corpus-body {
+  margin-top: 12px;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: var(--card);
+  box-shadow: var(--shadow);
+}
+
+.corpus-row,
+.corpus-editor-line {
+  display: grid;
+  grid-template-columns: 1.3fr 1fr 1.5fr auto;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.corpus-editor-line {
+  grid-template-columns: auto 1fr 1fr 2fr auto;
+}
+
+.corpus-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 14px 0;
+}
+
+.corpus-body input,
+.corpus-body select,
+.corpus-body textarea {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--card-strong);
+}
+
+.corpus-body textarea {
+  min-height: 80px;
+  resize: vertical;
+}
+
+.corpus-body button {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--text);
+  color: #fff;
+  cursor: pointer;
+}
+
+.corpus-body button:disabled {
+  opacity: 0.45;
+}
+
+.corpus-note {
+  color: var(--accent);
+  margin-top: 0;
+}
+
+.corpus-list {
+  max-height: 360px;
+  overflow-y: auto;
+  padding-right: 6px;
+  margin: 10px 0 18px;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+.example-line textarea {
+  min-height: 64px;
+}
+
+.paste-import {
+  margin: 14px 0;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--card-strong);
+}
+
+.paste-import textarea {
+  min-height: 180px;
+  font-family: "SF Mono", "JetBrains Mono", monospace;
+}
+
+.paste-preview {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #fff;
+}
+
+.paste-preview p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.corpus-error {
+  color: #8f2020;
+  margin: 8px 0;
+}
+
+.compact-actions {
+  margin-top: 10px;
+}
+
 .progress-actions {
   display: flex;
   flex-wrap: wrap;
