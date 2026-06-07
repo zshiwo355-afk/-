@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import re
 import shutil
+from pathlib import Path
 
 import aiofiles
 
+from backend.translator.segmenter import is_heading_line
 from backend.translator.storage import FileStorage
 from backend.translator.validator import ChunkRecord, JobRecord, SegmentRecord
 
-
-FINAL_OUTPUT_FILES = {"translated.txt", "translated.md", "bilingual.txt", "bilingual.md"}
 
 XML_CLEANUP_PATTERNS = [
     re.compile(r"```(?:xml|html)?\s*", re.IGNORECASE),
@@ -19,6 +19,12 @@ XML_CLEANUP_PATTERNS = [
     re.compile(r"</segment\s*>", re.IGNORECASE),
 ]
 
+CONTENTS_HEADING_KEYS = {"contents", "table of contents"}
+LEADING_INDEX_RE = re.compile(r"^\s*((?:\d+(?:\.\d+)*)[.)]?)\s+")
+NON_ALNUM_RE = re.compile(r"[^0-9a-z]+")
+INVALID_FILENAME_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+EXPORTABLE_STATUSES = {"completed", "failed", "paused", "cancelled"}
+
 
 def clean_translation_text(text: str) -> str:
     cleaned = text or ""
@@ -27,17 +33,112 @@ def clean_translation_text(text: str) -> str:
     return cleaned.strip()
 
 
-def _successful_segments(segments: list[SegmentRecord]) -> list[SegmentRecord]:
-    return sorted((segment for segment in segments if segment.status == "success"), key=lambda item: item.order)
+def build_output_filenames(file_name: str) -> dict[str, str]:
+    source_path = Path(file_name or "book.txt")
+    stem = INVALID_FILENAME_CHARS_RE.sub("_", source_path.stem).strip().rstrip(". ")
+    if not stem:
+        stem = "book"
+    return {
+        "translated.txt": f"{stem}.txt",
+        "translated.md": f"{stem}.md",
+        "bilingual.txt": f"{stem}_bilingual.txt",
+        "bilingual.md": f"{stem}_bilingual.md",
+    }
+
+
+def _ordered_segments(segments: list[SegmentRecord]) -> list[SegmentRecord]:
+    return sorted(segments, key=lambda item: item.order)
+
+
+def _normalized_key(text: str) -> str:
+    text = LEADING_INDEX_RE.sub("", text.strip())
+    text = NON_ALNUM_RE.sub(" ", text.lower())
+    return " ".join(text.split())
+
+
+def _is_contents_heading(text: str) -> bool:
+    return _normalized_key(text) in CONTENTS_HEADING_KEYS
+
+
+def _is_heading_segment(segment: SegmentRecord) -> bool:
+    source_text = segment.source_text.strip()
+    chapter_title = segment.chapter_title.strip()
+    return bool(source_text) and (source_text == chapter_title or is_heading_line(source_text))
+
+
+def _fallback_translation_text(segment: SegmentRecord) -> str:
+    if segment.status == "failed":
+        reason = segment.error or "未知错误"
+        return f"【未完成翻译：{reason}】\n{segment.source_text.strip()}"
+    return f"【未完成翻译：任务未完成】\n{segment.source_text.strip()}"
+
+
+def _segment_translation(segment: SegmentRecord) -> str:
+    cleaned = clean_translation_text(segment.translated_text)
+    if cleaned:
+        return cleaned
+    return _fallback_translation_text(segment)
+
+
+def _build_contents_overrides(segments: list[SegmentRecord]) -> dict[str, str]:
+    overrides: dict[str, str] = {}
+    for segment in segments:
+        if segment.status != "success":
+            continue
+        if not _is_contents_heading(segment.chapter_title):
+            continue
+        if _is_contents_heading(segment.source_text):
+            continue
+
+        content_key = _normalized_key(segment.source_text)
+        if not content_key:
+            continue
+
+        matched_heading = ""
+        for candidate in segments:
+            if candidate.order <= segment.order:
+                continue
+            if candidate.status != "success":
+                continue
+            if _is_contents_heading(candidate.chapter_title):
+                continue
+            if _normalized_key(candidate.source_text) != content_key:
+                continue
+            translated_heading = _segment_translation(candidate)
+            if not translated_heading:
+                continue
+            if _is_heading_segment(candidate) or len(candidate.source_text.strip()) <= 160:
+                matched_heading = translated_heading
+                break
+
+        if not matched_heading:
+            continue
+
+        prefix_match = LEADING_INDEX_RE.match(segment.source_text.strip())
+        if prefix_match:
+            heading_without_prefix = LEADING_INDEX_RE.sub("", matched_heading, count=1).strip()
+            overrides[segment.segment_id] = f"{prefix_match.group(1)} {heading_without_prefix}".strip()
+        else:
+            overrides[segment.segment_id] = matched_heading
+
+    return overrides
 
 
 def _build_translated_text(segments: list[SegmentRecord]) -> str:
-    return "\n\n".join(clean_translation_text(segment.translated_text) for segment in segments if segment.translated_text.strip())
+    contents_overrides = _build_contents_overrides(segments)
+    parts = []
+    for segment in segments:
+        text = contents_overrides.get(segment.segment_id, _segment_translation(segment))
+        if text.strip():
+            parts.append(text)
+    return "\n\n".join(parts)
 
 
 def _build_bilingual_text(segments: list[SegmentRecord]) -> str:
+    contents_overrides = _build_contents_overrides(segments)
     parts = []
     for segment in segments:
+        translated_text = contents_overrides.get(segment.segment_id, _segment_translation(segment))
         parts.append(
             "\n".join(
                 [
@@ -45,7 +146,7 @@ def _build_bilingual_text(segments: list[SegmentRecord]) -> str:
                     segment.source_text.strip(),
                     "",
                     "【译文】",
-                    clean_translation_text(segment.translated_text),
+                    translated_text,
                 ]
             )
         )
@@ -53,12 +154,16 @@ def _build_bilingual_text(segments: list[SegmentRecord]) -> str:
 
 
 def _build_bilingual_markdown(segments: list[SegmentRecord]) -> str:
+    contents_overrides = _build_contents_overrides(segments)
     parts = []
     for segment in segments:
+        translated_text = contents_overrides.get(segment.segment_id, _segment_translation(segment))
         parts.append(
             "\n".join(
                 [
                     f"## {segment.segment_id.upper()}",
+                    "",
+                    f"状态：`{segment.status}`",
                     "",
                     "**原文**",
                     "",
@@ -66,20 +171,24 @@ def _build_bilingual_markdown(segments: list[SegmentRecord]) -> str:
                     "",
                     "**译文**",
                     "",
-                    clean_translation_text(segment.translated_text),
+                    translated_text,
+                    "",
+                    "**错误**",
+                    "",
+                    segment.error or "-",
                 ]
             )
         )
     return "\n\n---\n\n".join(parts)
 
 
-def _clean_outputs_dir(storage: FileStorage, job_id: str) -> None:
+def _clean_outputs_dir(storage: FileStorage, job_id: str, keep_names: set[str]) -> None:
     outputs_dir = storage.job_outputs_dir(job_id)
     debug_dir = storage.job_dir(job_id) / "debug"
     outputs_dir.mkdir(parents=True, exist_ok=True)
     debug_dir.mkdir(parents=True, exist_ok=True)
     for path in outputs_dir.iterdir():
-        if path.name in FINAL_OUTPUT_FILES:
+        if path.name in keep_names:
             continue
         target = debug_dir / path.name
         try:
@@ -102,27 +211,31 @@ async def export_outputs(
     segments: list[SegmentRecord],
     chunks: list[ChunkRecord],
 ) -> None:
-    if job.status != "completed":
+    del chunks
+    if job.status not in EXPORTABLE_STATUSES:
         return
-    if job.completed_segments != job.total_segments or job.failed_segments != 0:
-        raise RuntimeError("任务未完成，不能导出最终文件")
+
+    ordered_segments = _ordered_segments(segments)
+    if not ordered_segments:
+        return
 
     outputs_dir = storage.job_outputs_dir(job.job_id)
     outputs_dir.mkdir(parents=True, exist_ok=True)
-    _clean_outputs_dir(storage, job.job_id)
+    output_filenames = build_output_filenames(job.file_name)
+    keep_names = set(output_filenames.values())
+    _clean_outputs_dir(storage, job.job_id, keep_names)
 
-    final_segments = _successful_segments(segments)
-    translated_text = _build_translated_text(final_segments)
-    bilingual_text = _build_bilingual_text(final_segments)
-    bilingual_markdown = _build_bilingual_markdown(final_segments)
+    translated_text = _build_translated_text(ordered_segments)
+    bilingual_text = _build_bilingual_text(ordered_segments)
+    bilingual_markdown = _build_bilingual_markdown(ordered_segments)
 
-    async with aiofiles.open(outputs_dir / "translated.txt", "w", encoding="utf-8-sig", newline="\n") as file:
+    async with aiofiles.open(outputs_dir / output_filenames["translated.txt"], "w", encoding="utf-8-sig", newline="\n") as file:
         await file.write(translated_text)
-    async with aiofiles.open(outputs_dir / "translated.md", "w", encoding="utf-8", newline="\n") as file:
+    async with aiofiles.open(outputs_dir / output_filenames["translated.md"], "w", encoding="utf-8", newline="\n") as file:
         await file.write(translated_text)
-    async with aiofiles.open(outputs_dir / "bilingual.txt", "w", encoding="utf-8-sig", newline="\n") as file:
+    async with aiofiles.open(outputs_dir / output_filenames["bilingual.txt"], "w", encoding="utf-8-sig", newline="\n") as file:
         await file.write(bilingual_text)
-    async with aiofiles.open(outputs_dir / "bilingual.md", "w", encoding="utf-8", newline="\n") as file:
+    async with aiofiles.open(outputs_dir / output_filenames["bilingual.md"], "w", encoding="utf-8", newline="\n") as file:
         await file.write(bilingual_markdown)
 
-    _clean_outputs_dir(storage, job.job_id)
+    _clean_outputs_dir(storage, job.job_id, keep_names)

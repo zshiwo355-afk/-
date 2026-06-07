@@ -2,7 +2,7 @@ import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
 
 function buildTargetContent(segment) {
   if (segment.status === 'failed') {
-    return segment.error || '翻译失败';
+    return segment.translated_text || '该段翻译失败';
   }
   if (segment.status === 'success') {
     return segment.translated_text;
@@ -57,15 +57,21 @@ const TranslationViewer = forwardRef(function TranslationViewer({
 
   const locateSegment = (segmentId) => {
     if (!segmentId) {
-      return;
+      return false;
     }
-    scrollSegmentInContainer(sourceScrollRef.current, sourceSegmentRefs.current[segmentId]);
-    scrollSegmentInContainer(targetScrollRef.current, targetSegmentRefs.current[segmentId]);
+    const sourceNode = sourceSegmentRefs.current[segmentId];
+    const targetNode = targetSegmentRefs.current[segmentId];
+    if (!sourceNode && !targetNode) {
+      return false;
+    }
+    scrollSegmentInContainer(sourceScrollRef.current, sourceNode);
+    scrollSegmentInContainer(targetScrollRef.current, targetNode);
+    return true;
   };
 
   useImperativeHandle(ref, () => ({
     locateCurrentSegment(segmentId) {
-      locateSegment(segmentId);
+      return locateSegment(segmentId);
     },
   }));
 
@@ -96,7 +102,7 @@ const TranslationViewer = forwardRef(function TranslationViewer({
           ) : null}
 
           {segments.length === 0 && fileSelected ? (
-            <EmptyPaneCard text="正在解析文件……" />
+            <EmptyPaneCard text="正在解析文件..." />
           ) : null}
 
           {segments.map((segment) => {
@@ -143,7 +149,7 @@ const TranslationViewer = forwardRef(function TranslationViewer({
           ) : null}
 
           {segments.length === 0 && fileSelected ? (
-            <EmptyPaneCard text={status === 'running' ? '正在准备翻译……' : '等待开始翻译……'} />
+            <EmptyPaneCard text={status === 'running' ? '正在准备翻译...' : '等待开始翻译...'} />
           ) : null}
 
           {segments.map((segment) => {
@@ -176,8 +182,11 @@ const TranslationViewer = forwardRef(function TranslationViewer({
                   <span>{segment.status}</span>
                 </div>
                 <pre>{buildTargetContent(segment)}</pre>
-                {segment.status === 'failed' && segment.error ? (
-                  <div className="segment-error">可点击“继续”在修复问题后重试。</div>
+                {segment.status === 'failed' ? (
+                  <div className="segment-error">
+                    <strong>失败原因：</strong>
+                    <span>{segment.error || '未记录具体错误，可尝试继续重试。'}</span>
+                  </div>
                 ) : null}
               </button>
             );

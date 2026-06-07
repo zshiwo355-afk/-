@@ -89,10 +89,39 @@ select {
   color: var(--muted);
 }
 
+.download-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: flex-end;
+  min-width: 320px;
+}
+
+.download-heading {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.download-heading span {
+  font-size: 14px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.download-heading small,
+.download-hint {
+  color: var(--muted);
+  font-size: 13px;
+}
+
 .download-row {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
+  justify-content: flex-end;
 }
 
 .download-link {
@@ -101,6 +130,13 @@ select {
   border: 1px solid var(--border);
   background: var(--card);
   box-shadow: var(--shadow);
+  transition: transform 160ms ease, border-color 160ms ease, background 160ms ease;
+}
+
+.download-link:hover {
+  transform: translateY(-1px);
+  border-color: rgba(157, 79, 46, 0.35);
+  background: #fff8f1;
 }
 
 .download-link.disabled {

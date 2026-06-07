@@ -8,8 +8,8 @@ from backend.translator.validator import ChunkRecord, JobRecord, SegmentRecord
 MODE_INSTRUCTIONS = {
     "faithful": "忠实翻译，不删减、不扩写、不解释，尽量保留原文论证结构和概念关系。",
     "natural": "在忠实原文的基础上，把译文调整为自然、通顺的中文书面表达。允许适度调整语序，但不能改变含义。",
-    "psychology": "使用心理学、精神分析、亲密关系研究语境下的中文表达。术语要稳定，隐喻不要机械直译。遇到 S/M、BDSM、权力关系、边界、羞耻、压迫者、受害者角色等内容时，优先采用心理学和关系研究语境。",
-    "wiki": "译文要清楚、稳定、可检索。关键术语首次出现时保留英文括注。不要过度文学化。适合导入知识库。",
+    "psychology": "使用心理学、精神分析、亲密关系研究语境下的中文表达。术语要稳定，隐喻不要机械直译。遇到 S/M、BDSM、权力关系、边界、羞耻、压迫者、受害者等内容时，优先采用心理学和关系研究语境。",
+    "wiki": "译文要清楚、稳定、可检索。关键术语首次出现时保留英文括注。不要过度文学化，适合导入知识库。",
     "bilingual_learning": "关键术语尽量保留英文括注，方便学习和对照阅读。译文要忠实但便于理解。",
 }
 
@@ -68,6 +68,7 @@ def build_messages(
     completed_chunks: list[ChunkRecord],
     corpus_context: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
+    del chunk, completed_chunks
     corpus_context = corpus_context or {}
     domain_prompt = (corpus_context.get("domain_prompt") or "无")[:1500]
     terms = corpus_context.get("terms") or []
@@ -89,7 +90,8 @@ def build_messages(
         "5. 不要合并 segment。\n"
         "6. 不要删除 segment。\n"
         "7. 不要新增 segment。\n"
-        "8. 输出格式必须是：\n"
+        "8. 书名、文章名、作品名优先保留原文；如需解释，可在首次出现后加中文括注，但不要把原题替换成纯中文译名。\n"
+        "9. 输出格式必须是：\n"
         "<translation>\n"
         "<segment id=\"seg_xxxxxx\">\n"
         "译文\n"
@@ -107,4 +109,10 @@ def build_single_segment_messages(
     completed_chunks: list[ChunkRecord],
     corpus_context: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
-    return build_messages(job, ChunkRecord(chunk_id="single", order=0, segment_ids=[segment.segment_id], source_text=segment.source_text), [segment], completed_chunks, corpus_context)
+    return build_messages(
+        job,
+        ChunkRecord(chunk_id="single", order=0, segment_ids=[segment.segment_id], source_text=segment.source_text),
+        [segment],
+        completed_chunks,
+        corpus_context,
+    )

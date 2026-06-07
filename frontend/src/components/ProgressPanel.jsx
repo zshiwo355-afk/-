@@ -5,6 +5,10 @@ export default function ProgressPanel({
   followCurrent,
   onToggleFollowCurrent,
   onLocateCurrent,
+  failedSegmentsCount,
+  firstFailedSegmentId,
+  selectedFailedError,
+  onLocateFailed,
 }) {
   const progress = job?.total_segments
     ? Math.round((job.completed_segments / job.total_segments) * 100)
@@ -39,6 +43,14 @@ export default function ProgressPanel({
         >
           定位当前翻译
         </button>
+        <button
+          type="button"
+          className="secondary-button"
+          onClick={onLocateFailed}
+          disabled={!firstFailedSegmentId}
+        >
+          定位首个失败
+        </button>
       </div>
 
       <div className="progress-grid">
@@ -54,7 +66,7 @@ export default function ProgressPanel({
         </div>
         <div>
           <span>失败数</span>
-          <strong>{job?.failed_segments || 0}</strong>
+          <strong>{failedSegmentsCount || 0}</strong>
         </div>
         <div>
           <span>当前 Segment</span>
@@ -62,7 +74,7 @@ export default function ProgressPanel({
         </div>
         <div className="progress-full">
           <span>最近错误</span>
-          <strong>{job?.last_error || '-'}</strong>
+          <strong>{selectedFailedError || job?.last_error || '-'}</strong>
         </div>
       </div>
     </section>

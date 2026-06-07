@@ -43,13 +43,6 @@ export default function CorpusPanel({ config, jobStatus, onConfigChange, onStatu
     setStyleExamples(corpus.style_examples || []);
   };
 
-  const currentCorpusPayload = () => ({
-    ...(corpusMeta || {}),
-    domain_prompt: domainPrompt,
-    glossary,
-    style_examples: styleExamples,
-  });
-
   const loadCorpora = async (selectedId = config.corpusId) => {
     const list = await corpusApi.list();
     setCorpora(list);
@@ -65,6 +58,32 @@ export default function CorpusPanel({ config, jobStatus, onConfigChange, onStatu
   const selectCorpus = async (id) => {
     onConfigChange('corpusId', id);
     applyCorpus(await corpusApi.get(id));
+  };
+
+  const validatePastedCorpus = (data) => {
+    if (typeof data?.domain_prompt !== 'string') {
+      throw new Error('domain_prompt 必须是字符串。');
+    }
+    if (!Array.isArray(data?.glossary)) {
+      throw new Error('glossary 必须是数组。');
+    }
+    if (!Array.isArray(data?.style_examples)) {
+      throw new Error('style_examples 必须是数组。');
+    }
+    return normalizeCorpus(data);
+  };
+
+  const importParsedCorpus = async (data, mode) => {
+    const normalized = validatePastedCorpus(data);
+    const result = await corpusApi.importJson({
+      mode,
+      target_corpus_id: corpusMeta.id,
+      data: normalized,
+    });
+    applyCorpus(result.corpus);
+    await loadCorpora(result.corpus_id);
+    onConfigChange('corpusId', result.corpus_id);
+    return result;
   };
 
   const saveDomainPrompt = async () => {
@@ -89,19 +108,6 @@ export default function CorpusPanel({ config, jobStatus, onConfigChange, onStatu
     onStatus('领域提示已保存。语料库修改会影响后续未翻译段落，已完成段落不会自动重翻。');
   };
 
-  const validatePastedCorpus = (data) => {
-    if (typeof data?.domain_prompt !== 'string') {
-      throw new Error('domain_prompt 必须是字符串。');
-    }
-    if (!Array.isArray(data?.glossary)) {
-      throw new Error('glossary 必须是数组。');
-    }
-    if (!Array.isArray(data?.style_examples)) {
-      throw new Error('style_examples 必须是数组。');
-    }
-    return normalizeCorpus(data);
-  };
-
   const parsePastePreview = () => {
     try {
       const parsed = JSON.parse(pasteText);
@@ -114,19 +120,6 @@ export default function CorpusPanel({ config, jobStatus, onConfigChange, onStatu
       setPasteError(error.message?.includes('必须') ? error.message : 'JSON 格式错误，请检查逗号、引号和括号。');
       return null;
     }
-  };
-
-  const importParsedCorpus = async (data, mode) => {
-    const normalized = validatePastedCorpus(data);
-    const result = await corpusApi.importJson({
-      mode,
-      target_corpus_id: corpusMeta.id,
-      data: normalized,
-    });
-    applyCorpus(result.corpus);
-    await loadCorpora(result.corpus_id);
-    onConfigChange('corpusId', result.corpus_id);
-    return result;
   };
 
   const importPaste = async (mode) => {
@@ -272,7 +265,16 @@ export default function CorpusPanel({ config, jobStatus, onConfigChange, onStatu
                 <button type="button" onClick={parsePastePreview}>解析预览</button>
                 <button type="button" onClick={() => importPaste('replace_current')}>导入到当前语料库</button>
                 <button type="button" onClick={() => importPaste('create_new')}>作为新语料库导入</button>
-                <button type="button" onClick={() => { setPasteText(''); setPastePreview(null); setPasteError(''); }}>清空</button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPasteText('');
+                    setPastePreview(null);
+                    setPasteError('');
+                  }}
+                >
+                  清空
+                </button>
               </div>
             </div>
           ) : null}

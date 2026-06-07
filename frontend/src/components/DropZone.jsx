@@ -50,4 +50,3 @@ export default function DropZone({ file, onFileSelect }) {
     </section>
   );
 }
-

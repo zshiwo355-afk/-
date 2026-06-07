@@ -23,7 +23,12 @@ const DEFAULT_CONFIG = {
   speedMode: 'stable',
 };
 
-const DOWNLOAD_TYPES = ['translated.txt', 'translated.md', 'bilingual.txt', 'bilingual.md'];
+const DOWNLOAD_OPTIONS = [
+  { fileType: 'translated.txt', label: '下载译文 TXT' },
+  { fileType: 'translated.md', label: '下载译文 MD' },
+  { fileType: 'bilingual.txt', label: '下载双语 TXT' },
+  { fileType: 'bilingual.md', label: '下载双语 MD' },
+];
 const CURRENT_JOB_KEY = 'current_job_id';
 
 function resolveTargetLanguage(config) {
@@ -95,11 +100,26 @@ export default function App() {
   const canStart = Boolean(file) || Boolean(job && !['completed', 'failed', 'cancelled'].includes(job.status));
   const hasAuthConfigError = job?.last_error?.includes(AUTH_FAILURE_MESSAGE);
   const hasIncompleteSegments = segments.some((segment) => segment.status !== 'success');
+  const failedSegments = segments.filter((segment) => segment.status === 'failed');
+  const firstFailedSegment = failedSegments[0] || null;
+  const selectedFailedSegment = segments.find((segment) => segment.segment_id === selectedId && segment.status === 'failed') || null;
   const canResume = ['paused', 'failed'].includes(job?.status || '') && hasIncompleteSegments;
   const canRepair = Boolean(job?.job_id) && ['running', 'pausing', 'paused', 'failed'].includes(job?.status || '') && hasIncompleteSegments;
   const isCompleted = job?.status === 'completed';
+  const canDownload = Boolean(job?.job_id) && ['completed', 'failed', 'paused', 'cancelled'].includes(job?.status || '');
 
-  const handleConfigChange = (key, value) => setConfig((current) => ({ ...current, [key]: value }));
+  const handleConfigChange = async (key, value) => {
+    setConfig((current) => ({ ...current, [key]: value }));
+    if (key === 'speedMode' && job?.job_id) {
+      try {
+        const updatedJob = await postJobAction(job.job_id, 'speed-mode', { speed_mode: value });
+        setJob(updatedJob);
+        setConfig((current) => configFromJob(updatedJob, current));
+      } catch {
+        // ignore silently — job may be pending
+      }
+    }
+  };
 
   const restoreJob = async (jobId) => {
     try {
@@ -132,7 +152,7 @@ export default function App() {
   };
 
   useEffect(() => {
-    const savedJobId = localStorage.getItem(CURRENT_JOB_KEY) || 'job_b833f6476598';
+    const savedJobId = localStorage.getItem(CURRENT_JOB_KEY);
     if (savedJobId) {
       restoreJob(savedJobId);
     }
@@ -360,12 +380,25 @@ export default function App() {
             <h1>本地英文书籍翻译工具</h1>
             <p className="hero-copy">上传 TXT / MD，按段落对齐翻译，支持语料库、暂停、继续和结果导出。</p>
           </div>
-          <div className="download-row">
-            {DOWNLOAD_TYPES.map((fileType) => (
-              <a key={fileType} className={`download-link ${isCompleted ? '' : 'disabled'}`} href={job?.job_id && isCompleted ? buildDownloadUrl(job.job_id, fileType) : undefined} target="_blank" rel="noreferrer">
-                {fileType}
-              </a>
-            ))}
+          <div className="download-panel">
+            <div className="download-heading">
+              <span>结果导出</span>
+              <small>{canDownload ? '可直接下载当前输出结果' : '翻译结束、暂停或失败后可下载当前结果'}</small>
+            </div>
+            <div className="download-row">
+              {DOWNLOAD_OPTIONS.map(({ fileType, label }) => (
+                <a
+                  key={fileType}
+                  className={`download-link ${canDownload ? '' : 'disabled'}`}
+                  href={job?.job_id && canDownload ? buildDownloadUrl(job.job_id, fileType) : undefined}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  {label}
+                </a>
+              ))}
+            </div>
+            {job?.job_id ? <div className="download-hint">当前任务：{job.file_name || job.job_id}</div> : null}
           </div>
         </div>
 
@@ -406,7 +439,7 @@ export default function App() {
 
         <div className="progress-actions">
           <button className="secondary-button" onClick={clearCurrentTask} type="button">
-            娓呴櫎褰撳墠浠诲姟 / 鏂板缓浠诲姟
+            清除当前任务 / 新建任务
           </button>
           {!isCompleted ? (
             <button className="secondary-button" onClick={handleRepairAndResume} disabled={!canRepair || isBusy} type="button">
@@ -422,10 +455,19 @@ export default function App() {
           activeSegmentId={activeId}
           statusMessage={statusMessage}
           followCurrent={followCurrent}
+          failedSegmentsCount={failedSegments.length}
+          firstFailedSegmentId={firstFailedSegment?.segment_id || ''}
+          selectedFailedError={selectedFailedSegment?.error || firstFailedSegment?.error || ''}
           onToggleFollowCurrent={() => setFollowCurrent((current) => !current)}
           onLocateCurrent={() => {
             const currentSegmentId = activeId || job?.current_segment_id;
             if (currentSegmentId) translationViewerRef.current?.locateCurrentSegment(currentSegmentId);
+          }}
+          onLocateFailed={() => {
+            if (!firstFailedSegment?.segment_id) return;
+            setSelectedId(firstFailedSegment.segment_id);
+            translationViewerRef.current?.locateCurrentSegment(firstFailedSegment.segment_id);
+            setStatusMessage(firstFailedSegment.error || `已定位失败段落 ${firstFailedSegment.segment_id}`);
           }}
         />
       </section>

@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from dotenv import dotenv_values, load_dotenv
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 
 BACKEND_DIR = Path(__file__).resolve().parent

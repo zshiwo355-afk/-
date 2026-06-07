@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 JobStatus = Literal["pending", "running", "pausing", "paused", "completed", "failed", "cancelled"]
 SegmentStatus = Literal["pending", "running", "partial", "success", "failed"]
 ChunkStatus = Literal["pending", "running", "completed", "failed", "cancelled"]
-AUTH_FAILURE_MESSAGE = "TokenHub API Key 无效或 base_url/地域不匹配，请检查 backend/config.local.json"
+AUTH_FAILURE_MESSAGE = "TokenHub API Key 无效或 base_url/域名不匹配，请检查 backend/config.local.json"
 
 
 def utc_now_iso() -> str:

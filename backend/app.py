@@ -12,6 +12,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from backend.config import reload_config
 from backend.translator.corpus_manager import CorpusManager
+from backend.translator.exporter import build_output_filenames, export_outputs
 from backend.translator.pipeline import EventBroker, TranslationPipeline
 from backend.translator.storage import FileStorage
 
@@ -65,6 +66,10 @@ class CorpusImportJsonPayload(BaseModel):
     mode: str
     target_corpus_id: str = "default"
     data: dict
+
+
+class SpeedModePayload(BaseModel):
+    speed_mode: str = "stable"
 
 
 class PausePayload(BaseModel):
@@ -273,6 +278,15 @@ async def cancel_job(job_id: str):
     return {"ok": True, **job.model_dump()}
 
 
+@app.post("/api/jobs/{job_id}/speed-mode")
+async def update_speed_mode(job_id: str, payload: SpeedModePayload):
+    valid = {"stable", "balanced", "fast"}
+    if payload.speed_mode not in valid:
+        raise HTTPException(status_code=400, detail=f"speed_mode must be one of {valid}")
+    job = await pipeline.set_speed_mode(job_id, payload.speed_mode)
+    return {"ok": True, **job.model_dump()}
+
+
 @app.get("/api/jobs/{job_id}")
 async def get_job(job_id: str):
     try:
@@ -287,6 +301,7 @@ async def get_job(job_id: str):
                 "use_glossary": job.config.use_glossary,
                 "use_style_examples": job.config.use_style_examples,
                 "use_domain_prompt": job.config.use_domain_prompt,
+                "speed_mode": job.config.speed_mode,
             }
         )
         return payload
@@ -326,16 +341,16 @@ async def get_events(job_id: str):
 
 @app.get("/api/jobs/{job_id}/download/{file_type}")
 async def download_file(job_id: str, file_type: str):
-    allowed = {
-        "translated.txt": "translated.txt",
-        "translated.md": "translated.md",
-        "bilingual.txt": "bilingual.txt",
-        "bilingual.md": "bilingual.md",
-    }
-    if file_type not in allowed:
+    if file_type not in {"translated.txt", "translated.md", "bilingual.txt", "bilingual.md"}:
         raise HTTPException(status_code=404, detail="Unknown file type")
 
-    path = storage.job_outputs_dir(job_id) / allowed[file_type]
+    job = await pipeline.get_job(job_id)
+    segments = await pipeline.get_segments(job_id)
+    chunks = await storage.load_chunks(job_id)
+    await pipeline.storage.ensure_base_dirs()
+    await export_outputs(storage, job, segments, chunks)
+    output_filenames = build_output_filenames(job.file_name)
+    path = storage.job_outputs_dir(job_id) / output_filenames[file_type]
     if not path.exists():
         raise HTTPException(status_code=404, detail="File not ready")
-    return FileResponse(path, filename=allowed[file_type], media_type="application/octet-stream")
+    return FileResponse(path, filename=output_filenames[file_type], media_type="application/octet-stream")

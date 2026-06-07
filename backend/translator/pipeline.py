@@ -37,6 +37,22 @@ SEGMENT_TRANSLATION_RE = re.compile(
     re.DOTALL | re.IGNORECASE,
 )
 FENCED_BLOCK_RE = re.compile(r"```(?:xml|html)?\s*(.*?)```", re.DOTALL | re.IGNORECASE)
+REFUSAL_PATTERNS = [
+    "无法给到相关内容",
+    "无法提供相关内容",
+    "无法协助",
+    "不能协助",
+    "不能提供",
+    "抱歉",
+    "对不起",
+    "sorry",
+    "i can't",
+    "i cannot",
+    "i’m sorry",
+    "i am sorry",
+    "unable to help",
+    "cannot help with that",
+]
 
 
 class EventBroker:
@@ -121,7 +137,7 @@ class TranslationPipeline:
                 max_segments_per_chunk=config.max_segments_per_chunk,
                 min_chars_for_standalone_chunk=config.min_chars_for_standalone_chunk,
                 merge_tiny_chapter_segments=config.merge_tiny_chapter_segments,
-                speed_mode=config.speed_mode,
+                speed_mode=speed_mode,
                 target_language=target_language or config.default_target_language,
                 translation_mode=translation_mode,
                 corpus_id=corpus_id,
@@ -248,6 +264,7 @@ class TranslationPipeline:
             await self.storage.save_job(job)
             return job
         self.normalize_interrupted_segments(segments, chunks)
+        self._reset_failed_segments_for_retry(segments, chunks)
         await self.storage.save_segments(job_id, segments)
         for chunk in chunks:
             await self.storage.save_chunk(job_id, chunk)
@@ -263,6 +280,18 @@ class TranslationPipeline:
         print(f"[resume] next_segment={unfinished[0].segment_id if unfinished else ''}")
         print("[resume] create background task")
         self._create_background_task(job_id)
+        return job
+
+    async def set_speed_mode(self, job_id: str, speed_mode: str) -> JobRecord:
+        job = await self.storage.load_job(job_id)
+        valid = {"stable", "balanced", "fast"}
+        if speed_mode not in valid:
+            raise ValueError(f"speed_mode must be one of {valid}")
+        job.config.speed_mode = speed_mode
+        job.updated_at = utc_now_iso()
+        await self.storage.save_job(job)
+        await self._emit_job_snapshot(job)
+        print(f"[speed-mode] job_id={job_id} speed_mode={speed_mode}")
         return job
 
     def _create_background_task(self, job_id: str) -> None:
@@ -423,6 +452,11 @@ class TranslationPipeline:
             if segment_id in allowed_ids:
                 translations[segment_id] = self._clean_translation_text(translated_text)
 
+        if not translations and len(segment_ids) == 1:
+            fallback_text = self._extract_loose_single_segment_translation(response_text)
+            if fallback_text:
+                translations[segment_ids[0]] = fallback_text
+
         missing_segment_ids = [segment_id for segment_id in segment_ids if not translations.get(segment_id)]
         return TranslationParseResult(
             translations=translations,
@@ -444,35 +478,141 @@ class TranslationPipeline:
     def _clean_translation_text(self, text: str) -> str:
         return text.strip().removeprefix("<![CDATA[").removesuffix("]]>").strip()
 
+    def _find_first_retryable_segment(self, segments: list[SegmentRecord]) -> SegmentRecord | None:
+        return next((segment for segment in segments if segment.status in {"pending", "running", "partial"}), None)
+
+    def _reset_failed_segments_for_retry(self, segments: list[SegmentRecord], chunks: list[ChunkRecord]) -> bool:
+        changed = False
+        segment_map = {segment.segment_id: segment for segment in segments}
+        for segment in segments:
+            if segment.status == "failed":
+                segment.status = "pending"
+                segment.error = ""
+                changed = True
+
+        for chunk in chunks:
+            if chunk.status == "failed":
+                chunk.status = "pending"
+                chunk.error = ""
+                changed = True
+            elif chunk.segment_ids:
+                chunk_segments = [segment_map[segment_id] for segment_id in chunk.segment_ids if segment_id in segment_map]
+                if chunk_segments and any(segment.status != "success" for segment in chunk_segments) and chunk.status == "completed":
+                    chunk.status = "pending"
+                    changed = True
+        return changed
+
+    def _model_output_preview(self, text: str, max_chars: int = 240) -> str:
+        normalized = self._normalize_model_output(text or "")
+        compact = re.sub(r"\s+", " ", normalized).strip()
+        if not compact:
+            return ""
+        if len(compact) <= max_chars:
+            return compact
+        return f"{compact[:max_chars].rstrip()}..."
+
+    def _is_model_refusal(self, text: str) -> bool:
+        preview = self._model_output_preview(text, max_chars=320).lower()
+        if not preview:
+            return False
+        return any(pattern in preview for pattern in REFUSAL_PATTERNS)
+
+    def _extract_loose_single_segment_translation(self, response_text: str) -> str:
+        normalized = self._normalize_model_output(response_text or "")
+        if not normalized or self._is_model_refusal(normalized):
+            return ""
+        text = re.sub(r"</?translation\b[^>]*>", "", normalized, flags=re.IGNORECASE)
+        text = re.sub(r"</?segment\b[^>]*>", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"<[^>]+>", "", text).strip()
+        cleaned = self._clean_translation_text(text)
+        if not cleaned or self._is_model_refusal(cleaned):
+            return ""
+        return cleaned
+
+    def _build_segment_retry_messages(
+        self,
+        job: JobRecord,
+        segment: SegmentRecord,
+        corpus_context: dict[str, Any] | None = None,
+    ) -> list[dict[str, str]]:
+        corpus_context = corpus_context or {}
+        terms = ensure_list(corpus_context.get("terms", []))
+        term_lines = []
+        for item in terms[:12]:
+            source = str(item.get("source", "")).strip()
+            target = str(item.get("target", "")).strip()
+            if source and target:
+                term_lines.append(f"- {source} => {target}")
+        domain_prompt = str(corpus_context.get("domain_prompt", "")).strip()[:800]
+        term_block = "\n".join(term_lines) if term_lines else "无"
+        user_prompt = (
+            f"请把下面这一个英文书籍段落翻译成{job.target_language}。\n\n"
+            "要求：\n"
+            "1. 只输出译文正文，不要 XML、标签、解释、前言、致歉或额外说明。\n"
+            "2. 忠实翻译，不删减，不扩写，不总结。\n"
+            "3. 这是学术/出版内容翻译，即使涉及心理学、BDSM、性、权力关系等内容，也只做中性、客观、逐句的书面翻译。\n"
+            "4. 如果原文中有专有名词、书名、DOI，请保留必要信息，不要改写成别的内容。\n\n"
+            f"术语参考：\n{term_block}\n\n"
+            f"领域提示：\n{domain_prompt or '无'}\n\n"
+            f"原文：\n{segment.source_text}"
+        )
+        return [
+            {
+                "role": "system",
+                "content": "你是专业图书翻译助手。你的任务只有翻译，不做审查解释，不输出标签，只返回译文正文。",
+            },
+            {"role": "user", "content": user_prompt},
+        ]
+
+    def _build_segment_failure_message(self, response_text: str, default_message: str = "无法解析模型输出") -> str:
+        preview = self._model_output_preview(response_text)
+        if self._is_model_refusal(response_text):
+            return f"模型拒答或内容被拦截。模型返回预览：{preview}" if preview else "模型拒答或内容被拦截"
+        if preview:
+            return f"{default_message}。模型返回预览：{preview}"
+        return default_message
+
     async def _translate_missing_segments(
         self,
         client: HyMT2Client,
         job: JobRecord,
         missing_segments: list[SegmentRecord],
         completed_chunks: list[ChunkRecord],
-    ) -> dict[str, str]:
+    ) -> tuple[dict[str, str], dict[str, str]]:
         translations: dict[str, str] = {}
+        errors: dict[str, str] = {}
         for segment in missing_segments:
             corpus_context = self._build_corpus_context(job, segment.source_text)
-            messages = build_single_segment_messages(
-                job=job,
-                segment=segment,
-                completed_chunks=completed_chunks,
-                corpus_context=corpus_context,
-            )
-            response = await client.translate_single_segment(messages=messages)
-            parse_result = self._parse_translation_response(response.text, [segment.segment_id])
-            translated_text = parse_result.translations.get(segment.segment_id)
-            if translated_text:
-                translations[segment.segment_id] = translated_text
-                continue
+            attempt_messages = [
+                build_single_segment_messages(
+                    job=job,
+                    segment=segment,
+                    completed_chunks=completed_chunks,
+                    corpus_context=corpus_context,
+                ),
+                self._build_segment_retry_messages(job, segment, corpus_context),
+            ]
+            last_error = "无法解析模型输出"
+            for messages in attempt_messages:
+                response = await client.translate_single_segment(messages=messages)
+                parse_result = self._parse_translation_response(response.text, [segment.segment_id])
+                translated_text = parse_result.translations.get(segment.segment_id)
+                if translated_text:
+                    translations[segment.segment_id] = translated_text
+                    last_error = ""
+                    break
 
-            fallback_text = self._normalize_model_output(response.text)
-            fallback_text = re.sub(r"</?translation\b[^>]*>", "", fallback_text, flags=re.IGNORECASE).strip()
-            fallback_text = re.sub(r"</?segment\b[^>]*>", "", fallback_text, flags=re.IGNORECASE).strip()
-            if fallback_text:
-                translations[segment.segment_id] = self._clean_translation_text(fallback_text)
-        return translations
+                fallback_text = self._extract_loose_single_segment_translation(response.text)
+                if fallback_text:
+                    translations[segment.segment_id] = fallback_text
+                    last_error = ""
+                    break
+
+                last_error = self._build_segment_failure_message(response.text)
+
+            if last_error:
+                errors[segment.segment_id] = last_error
+        return translations, errors
 
     def _extract_stream_translations(
         self,
@@ -516,7 +656,14 @@ class TranslationPipeline:
         return previews
 
     async def _emit_job_snapshot(self, job: JobRecord) -> None:
-        await self.broker.publish(job.job_id, "job_updated", job.model_dump())
+        latest_job = await self.storage.load_job(job.job_id)
+        await self.broker.publish(job.job_id, "job_updated", latest_job.model_dump())
+
+    def _normalized_speed_mode(self, speed_mode: str | None) -> str:
+        mode = (speed_mode or "stable").strip().lower()
+        if mode not in {"stable", "balanced", "fast"}:
+            return "stable"
+        return mode
 
     async def _recompute_job_progress(self, job: JobRecord, segments: list[SegmentRecord]) -> JobRecord:
         job.completed_segments = sum(1 for segment in segments if segment.status == "success")
@@ -534,7 +681,7 @@ class TranslationPipeline:
         current_chapter: str = "",
     ) -> SegmentRecord | None:
         await self._recompute_job_progress(job, segments)
-        next_segment = self._find_first_unfinished_segment(segments)
+        next_segment = self._find_first_retryable_segment(segments)
         if next_segment:
             job.current_segment_id = next_segment.segment_id
             job.current_chapter = current_chapter or next_segment.chapter_title
@@ -832,9 +979,7 @@ class TranslationPipeline:
             job.last_run_heartbeat_at = utc_now_iso()
             await self.storage.save_job(job)
 
-            speed_mode = (job.config.speed_mode or "stable").strip().lower()
-            if speed_mode not in {"stable", "balanced", "fast"}:
-                speed_mode = "stable"
+            speed_mode = self._normalized_speed_mode(job.config.speed_mode)
 
             if speed_mode == "stable":
                 print(f"[mode] speed_mode=stable using serial runner")
@@ -878,6 +1023,9 @@ class TranslationPipeline:
                 chunk_segments: list[SegmentRecord] = []
                 next_segment = None
                 latest_job = await self.storage.load_job(job_id)
+                if self._normalized_speed_mode(latest_job.config.speed_mode) != "stable":
+                    print(f"[mode-switch] stable -> {self._normalized_speed_mode(latest_job.config.speed_mode)}")
+                    return await self._run_job(job_id)
                 segments = await self.storage.load_segments(job_id)
                 chunks = await self.storage.load_chunks(job_id)
                 if latest_job.cancel_requested or latest_job.status == "cancelled":
@@ -896,21 +1044,32 @@ class TranslationPipeline:
                     print("[run-exit] reason=pause_requested")
                     return
 
-                next_segment = self._find_first_unfinished_segment(segments)
+                next_segment = self._find_first_retryable_segment(segments)
                 if not next_segment:
-                    latest_job.status = "completed"
                     latest_job.pause_requested = False
                     latest_job.cancel_requested = False
-                    latest_job.last_error = ""
                     latest_job.current_segment_id = ""
                     latest_job.current_chapter = ""
                     await self._recompute_job_progress(latest_job, segments)
-                    await export_outputs(self.storage, latest_job, segments, chunks)
-                    await self.storage.save_job(latest_job)
-                    await self.broker.publish(job_id, "job_completed", latest_job.model_dump())
-                    print(f"[progress] completed={latest_job.completed_segments} failed={latest_job.failed_segments} next=completed")
-                    print("[run] completed")
-                    print("[run-exit] reason=completed")
+                    if any(segment.status == "failed" for segment in segments):
+                        latest_job.status = "failed"
+                        if not latest_job.last_error:
+                            latest_job.last_error = "存在失败段落，可点击继续重试。"
+                        await export_outputs(self.storage, latest_job, segments, chunks)
+                        await self.storage.save_job(latest_job)
+                        await self.broker.publish(job_id, "job_failed", latest_job.model_dump())
+                        print(f"[progress] completed={latest_job.completed_segments} failed={latest_job.failed_segments} next=failed")
+                        print("[run] failed")
+                        print("[run-exit] reason=failed")
+                    else:
+                        latest_job.status = "completed"
+                        latest_job.last_error = ""
+                        await export_outputs(self.storage, latest_job, segments, chunks)
+                        await self.storage.save_job(latest_job)
+                        await self.broker.publish(job_id, "job_completed", latest_job.model_dump())
+                        print(f"[progress] completed={latest_job.completed_segments} failed={latest_job.failed_segments} next=completed")
+                        print("[run] completed")
+                        print("[run-exit] reason=completed")
                     return
 
                 job = latest_job
@@ -1121,7 +1280,7 @@ class TranslationPipeline:
                                 },
                             ),
                         )
-                        fallback_translations = await self._translate_missing_segments(
+                        fallback_translations, fallback_errors = await self._translate_missing_segments(
                             client=client,
                             job=job,
                             missing_segments=missing_segments,
@@ -1183,12 +1342,19 @@ class TranslationPipeline:
                 else:
                     chunk.status = "failed"
                     missing_ids = set(parse_result.missing_segment_ids if parse_result else [])
+                    chunk.response_text = chunk_response.text if chunk_response else chunk.response_text
+                    preview = self._model_output_preview(chunk_response.text if chunk_response else "")
                     chunk.error = (
                         "该段翻译解析失败，可点击继续重试。"
                         if parse_result and parse_result.missing_segment_ids
                         else last_error or "Failed to parse model output"
                     )
                     chunk.completed_at = utc_now_iso()
+                    if preview:
+                        if parse_result and parse_result.missing_segment_ids:
+                            chunk.error = f"该段翻译解析失败，可点击继续重试。模型返回预览：{preview}"
+                        elif not last_error or last_error == "Failed to parse model output":
+                            chunk.error = f"无法解析模型输出。模型返回预览：{preview}"
                     for segment in pending_segments:
                         translated_text = parse_result.translations.get(segment.segment_id, "") if parse_result else ""
                         if translated_text:
@@ -1255,7 +1421,7 @@ class TranslationPipeline:
                 print("[run-exit] reason=paused")
                 return
 
-            unfinished_segments = [segment for segment in segments if segment.status != "success"]
+            unfinished_segments = [segment for segment in segments if segment.status in {"pending", "running", "partial"}]
             if unfinished_segments:
                 job.status = "running"
                 job.current_segment_id = unfinished_segments[0].segment_id
@@ -1304,7 +1470,7 @@ class TranslationPipeline:
             self.tasks.pop(job_id, None)
 
     def _speed_config(self, job: JobRecord) -> dict[str, Any]:
-        mode = (job.config.speed_mode or "stable").strip().lower()
+        mode = self._normalized_speed_mode(job.config.speed_mode)
         if mode == "balanced":
             return {"concurrency": 2, "max_segments": max(1, job.config.max_segments_per_chunk)}
         if mode == "fast":
@@ -1314,6 +1480,7 @@ class TranslationPipeline:
     async def _run_job_concurrent(self, job_id: str) -> None:
         print(f"[run-concurrent] job_id={job_id} start")
         job = await self.storage.load_job(job_id)
+        runner_mode = self._normalized_speed_mode(job.config.speed_mode)
         client = self._build_client(job)
         sc = self._speed_config(job)
         concurrency = sc["concurrency"]
@@ -1328,6 +1495,9 @@ class TranslationPipeline:
         try:
             while True:
                 latest_job = await self.storage.load_job(job_id)
+                if self._normalized_speed_mode(latest_job.config.speed_mode) != runner_mode:
+                    print(f"[mode-switch] {runner_mode} -> {self._normalized_speed_mode(latest_job.config.speed_mode)}")
+                    return await self._run_job(job_id)
                 segments = await self.storage.load_segments(job_id)
                 chunks = await self.storage.load_chunks(job_id)
 
@@ -1348,32 +1518,29 @@ class TranslationPipeline:
                     print("[run-concurrent-exit] reason=pause_requested")
                     return
 
-                unfinished = [s for s in segments if s.status != "success"]
+                unfinished = [s for s in segments if s.status not in ("success", "failed")]
                 if not unfinished:
-                    latest_job.status = "completed"
-                    latest_job.pause_requested = False
-                    latest_job.cancel_requested = False
-                    latest_job.last_error = ""
-                    latest_job.current_segment_id = ""
-                    latest_job.current_chapter = ""
-                    await self._recompute_job_progress(latest_job, segments)
-                    await export_outputs(self.storage, latest_job, segments, chunks)
-                    await self.storage.save_job(latest_job)
-                    await self.broker.publish(job_id, "job_completed", latest_job.model_dump())
-                    print("[run-concurrent] completed")
-                    return
+                    # No pending/running left; break to let final logic decide completed vs failed
+                    break
 
                 job = latest_job
                 job.status = "running"
                 job.pause_requested = False
+                # Concurrent mode always non-stream
+                job.config.stream = False
 
                 # Build concurrent batch: multiple chunks
                 batch_chunks: list[tuple[ChunkRecord, list[SegmentRecord], str]] = []
+                assigned_ids: set[str] = set()
+                # Exclude failed segments in the current run; resume will reset them to pending for retry
+                active_segments = [s for s in segments if s.status != "failed"]
                 for _ in range(concurrency):
-                    next_seg = self._find_first_unfinished_segment(segments)
+                    next_seg = self._find_first_retryable_segment(
+                        [s for s in active_segments if s.segment_id not in assigned_ids]
+                    )
                     if not next_seg:
                         break
-                    chunk, pending, reason = self._build_runtime_chunk_from_next(job, segments, next_seg)
+                    chunk, pending, reason = self._build_runtime_chunk_from_next(job, active_segments, next_seg)
                     if not pending:
                         break
                     self._log_chunk_build(job, chunk, pending, pending, reason)
@@ -1381,6 +1548,7 @@ class TranslationPipeline:
                         if s.status != "success":
                             s.status = "running"
                             s.error = ""
+                        assigned_ids.add(s.segment_id)
                     batch_chunks.append((chunk, pending, reason))
 
                 if not batch_chunks:
@@ -1441,19 +1609,38 @@ class TranslationPipeline:
                                 response.text, [s.segment_id for s in pending],
                             )
                             if not parse_result.missing_segment_ids:
-                                return chunk, pending, parse_result, response, None
+                                return chunk, pending, parse_result, response, None, {}
                             if attempt == job.config.max_retries:
-                                return chunk, pending, parse_result, response, None
+                                missing_by_id = {s.segment_id: s for s in pending}
+                                missing_segments = [
+                                    missing_by_id[sid]
+                                    for sid in parse_result.missing_segment_ids
+                                    if sid in missing_by_id
+                                ]
+                                if missing_segments:
+                                    fallback_translations, fallback_errors = await self._translate_missing_segments(
+                                        client=client,
+                                        job=job,
+                                        missing_segments=missing_segments,
+                                        completed_chunks=[c for c in chunks if c.status == "completed"],
+                                    )
+                                    parse_result.translations.update(fallback_translations)
+                                    parse_result.missing_segment_ids = [
+                                        sid for sid in parse_result.missing_segment_ids
+                                        if not parse_result.translations.get(sid)
+                                    ]
+                                    return chunk, pending, parse_result, response, None, fallback_errors
+                                return chunk, pending, parse_result, response, None, {}
                             if parse_result.missing_segment_ids:
                                 raise ValueError(f"Missing: {', '.join(parse_result.missing_segment_ids)}")
                         except TranslationAuthError as exc:
-                            return chunk, pending, None, None, ("auth", exc)
+                            return chunk, pending, None, None, ("auth", exc), {}
                         except TranslationTimeoutError:
-                            return chunk, pending, None, None, ("timeout", None)
+                            return chunk, pending, None, None, ("timeout", None), {}
                         except Exception as exc:
                             last_error = str(exc)
                             chunk.error = last_error
-                    return chunk, pending, None, None, ("error", last_error or "failed")
+                    return chunk, pending, None, None, ("error", last_error or "failed"), {}
 
                 tasks = [
                     asyncio.create_task(translate_one(chunk, pending))
@@ -1478,7 +1665,7 @@ class TranslationPipeline:
                             print(f"[batch] chunk exception idx={idx} error={result}")
                             fatal_error = True
                             continue
-                        chunk, pending, parse_result, response, error_tuple = result
+                        chunk, pending, parse_result, response, error_tuple, fallback_errors = result
 
                         if error_tuple:
                             err_type, err_val = error_tuple
@@ -1505,8 +1692,8 @@ class TranslationPipeline:
                                 chunk.completed_at = utc_now_iso()
                                 for s in pending:
                                     if s.segment_id in seg_map and seg_map[s.segment_id].status != "success":
-                                        seg_map[s.segment_id].status = "pending"
-                                        seg_map[s.segment_id].error = ""
+                                        seg_map[s.segment_id].status = "failed"
+                                        seg_map[s.segment_id].error = chunk.error
                             old = chunk_map.get(chunk.chunk_id)
                             if old:
                                 old.status = chunk.status
@@ -1540,39 +1727,44 @@ class TranslationPipeline:
                                     seg_map[sid].error = ""
 
                             if parse_result.missing_segment_ids:
-                                seg_by_id = {s.segment_id: s for s in pending}
-                                missing = [seg_by_id[sid] for sid in parse_result.missing_segment_ids if sid in seg_by_id]
-                                if missing:
-                                    fb = await self._translate_missing_segments(
-                                        client=client, job=job, missing_segments=missing,
-                                        completed_chunks=[c for c in fresh_chunks if c.status == "completed"],
-                                    )
-                                    parse_result.translations.update(fb)
-                                    parse_result.missing_segment_ids = [
-                                        sid for sid in parse_result.missing_segment_ids
-                                        if not parse_result.translations.get(sid)
-                                    ]
-                                    for s in missing:
-                                        if s.segment_id in seg_map and parse_result.translations.get(s.segment_id):
-                                            seg_map[s.segment_id].translated_text = parse_result.translations[s.segment_id]
-                                            seg_map[s.segment_id].status = "success"
-                                            seg_map[s.segment_id].error = ""
-
-                            if parse_result.missing_segment_ids:
                                 chunk.status = "failed"
                                 chunk.error = "部分段落翻译缺失"
+                                preview = self._model_output_preview(response.text if response else "")
+                                if preview:
+                                    chunk.error = f"部分段落翻译缺失。模型返回预览：{preview}"
                                 for s in pending:
                                     if s.segment_id in seg_map and s.segment_id in parse_result.missing_segment_ids:
-                                        seg_map[s.segment_id].status = "pending"
-                                        seg_map[s.segment_id].error = ""
+                                        seg_map[s.segment_id].status = "failed"
+                                        seg_map[s.segment_id].error = chunk.error
                         else:
                             chunk.status = "failed"
                             chunk.error = "无法解析模型输出"
+                            preview = self._model_output_preview(response.text if response else "")
+                            if preview:
+                                chunk.error = f"无法解析模型输出。模型返回预览：{preview}"
                             chunk.completed_at = utc_now_iso()
                             for s in pending:
                                 if s.segment_id in seg_map and seg_map[s.segment_id].status != "success":
-                                    seg_map[s.segment_id].status = "pending"
-                                    seg_map[s.segment_id].error = ""
+                                    seg_map[s.segment_id].status = "failed"
+                                    seg_map[s.segment_id].error = chunk.error
+
+                        if chunk.status == "failed":
+                            if response and response.text:
+                                chunk.response_text = response.text
+                            if not chunk.completed_at:
+                                chunk.completed_at = utc_now_iso()
+                            default_message = (
+                                "部分段落翻译缺失"
+                                if parse_result and parse_result.missing_segment_ids
+                                else "无法解析模型输出"
+                            )
+                            chunk.error = self._build_segment_failure_message(
+                                response.text if response else "",
+                                default_message=default_message,
+                            )
+                            for s in pending:
+                                if s.segment_id in seg_map and seg_map[s.segment_id].status == "failed":
+                                    seg_map[s.segment_id].error = fallback_errors.get(s.segment_id, chunk.error)
 
                         old = chunk_map.get(chunk.chunk_id)
                         if old:
@@ -1643,7 +1835,7 @@ class TranslationPipeline:
                         return
 
                     await self._recompute_job_progress(fresh_job, new_segments)
-                    next_seg = self._find_first_unfinished_segment(new_segments)
+                    next_seg = self._find_first_retryable_segment(new_segments)
                     if next_seg:
                         fresh_job.current_segment_id = next_seg.segment_id
                         fresh_job.current_chapter = next_seg.chapter_title
@@ -1675,9 +1867,7 @@ class TranslationPipeline:
             await self._recompute_job_progress(job, segments)
             if job.status in ("cancelled", "paused"):
                 return
-            if any(s.status == "failed" for s in segments) and not any(
-                s.status == "success" for s in segments
-            ):
+            if any(s.status == "failed" for s in segments):
                 job.status = "failed"
             else:
                 job.status = "completed"
