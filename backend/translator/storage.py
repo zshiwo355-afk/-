@@ -26,6 +26,7 @@ class FileStorage:
         self.outputs_dir = base_dir / "outputs"
         self.json_cache: dict[str, Any] = {}
         self._locks: dict[str, asyncio.Lock] = {}
+        self._export_locks: dict[str, asyncio.Lock] = {}
 
     async def ensure_base_dirs(self) -> None:
         for path in (self.uploads_dir, self.jobs_dir, self.outputs_dir):
@@ -52,10 +53,18 @@ class FileStorage:
     def translation_log_path(self, job_id: str) -> Path:
         return self.job_outputs_dir(job_id) / "translation_log.json"
 
+    def result_manifest_path(self, job_id: str) -> Path:
+        return self.job_outputs_dir(job_id) / "result.json"
+
     def _get_lock(self, job_id: str) -> asyncio.Lock:
         if job_id not in self._locks:
             self._locks[job_id] = asyncio.Lock()
         return self._locks[job_id]
+
+    def get_export_lock(self, job_id: str) -> asyncio.Lock:
+        if job_id not in self._export_locks:
+            self._export_locks[job_id] = asyncio.Lock()
+        return self._export_locks[job_id]
 
     def _cache_key(self, path: Path) -> str:
         return str(path.resolve())
@@ -164,11 +173,41 @@ class FileStorage:
         self.job_dir(job.job_id).mkdir(parents=True, exist_ok=True)
         self.chunks_dir(job.job_id).mkdir(parents=True, exist_ok=True)
         self.job_outputs_dir(job.job_id).mkdir(parents=True, exist_ok=True)
-        await self.save_job(job)
         await self.save_segments(job.job_id, segments)
         for chunk in chunks:
             await self.save_chunk(job.job_id, chunk)
         await self._write_json(self.translation_log_path(job.job_id), [])
+        # job.json is the ready marker: readers never see a half-created task.
+        await self.save_job(job)
+
+    async def find_job_by_client_request_id(self, client_request_id: str) -> JobRecord | None:
+        if not client_request_id or not self.jobs_dir.exists():
+            return None
+        # ponytail: a directory scan is enough for the local single-user store;
+        # replace it with an index only if task volume makes this measurable.
+        for job_dir in self.jobs_dir.iterdir():
+            if not job_dir.is_dir():
+                continue
+            try:
+                job = await self.load_job(job_dir.name)
+            except Exception:
+                continue
+            if job.client_request_id == client_request_id:
+                return job
+        return None
+
+    async def save_result_manifest(self, job_id: str, payload: dict[str, Any]) -> None:
+        await self._write_json(self.result_manifest_path(job_id), payload)
+
+    async def load_result_manifest(self, job_id: str) -> dict[str, Any] | None:
+        payload = await self._read_json(self.result_manifest_path(job_id))
+        return payload if isinstance(payload, dict) else None
+
+    async def clear_result_manifest(self, job_id: str) -> None:
+        path = self.result_manifest_path(job_id)
+        self.json_cache.pop(self._cache_key(path), None)
+        for target in (path, path.with_suffix(path.suffix + ".bak")):
+            target.unlink(missing_ok=True)
 
     async def save_job(self, job: JobRecord) -> None:
         async with self._get_lock(job.job_id):

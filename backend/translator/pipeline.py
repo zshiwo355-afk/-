@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import re
 import time
 from collections import defaultdict
@@ -55,6 +57,18 @@ REFUSAL_PATTERNS = [
 ]
 
 
+class IdempotencyConflictError(ValueError):
+    pass
+
+
+class EmptyDocumentError(ValueError):
+    pass
+
+
+class JobAlreadyRunningError(RuntimeError):
+    pass
+
+
 class EventBroker:
     def __init__(self) -> None:
         self.subscribers: dict[str, list[asyncio.Queue[dict[str, Any]]]] = defaultdict(list)
@@ -82,6 +96,8 @@ class TranslationPipeline:
         self.storage = storage
         self.broker = broker
         self.tasks: dict[str, asyncio.Task[None]] = {}
+        self._submission_lock = asyncio.Lock()
+        self._lifecycle_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self.corpus_manager = CorpusManager(storage.base_dir / "corpus")
 
     async def create_job_from_file(
@@ -100,6 +116,9 @@ class TranslationPipeline:
         translate_mode: str = "faithful",
         translation_level: int = 3,
         speed_mode: str = "stable",
+        client_request_id: str = "",
+        source_sha256: str = "",
+        request_fingerprint: str = "",
     ) -> JobRecord:
         source_path = str(Path(source_path).resolve())
         config = build_runtime_config(
@@ -112,6 +131,8 @@ class TranslationPipeline:
         text = load_text_file(source_path)
         segment_limit = max(800, min(2200, config.chunk_size_chars - 800))
         segments = segment_document(text, max_segment_chars=segment_limit)
+        if not segments:
+            raise EmptyDocumentError("文件中没有可翻译的文字")
         chunks = build_chunks(segments, config.chunk_size_chars)
         avg_segment_chars = round(sum(len(segment.source_text) for segment in segments) / max(len(segments), 1), 2)
         max_segment_chars_value = max((len(segment.source_text) for segment in segments), default=0)
@@ -121,6 +142,9 @@ class TranslationPipeline:
             file_name=file_name,
             source_path=source_path,
             target_language=target_language or config.default_target_language,
+            client_request_id=client_request_id,
+            source_sha256=source_sha256,
+            request_fingerprint=request_fingerprint,
             total_segments=len(segments),
             total_chunks=len(chunks),
             avg_segment_chars=avg_segment_chars,
@@ -168,25 +192,64 @@ class TranslationPipeline:
         translate_mode: str = "faithful",
         translation_level: int = 3,
         speed_mode: str = "stable",
-    ) -> JobRecord:
-        temp_job_id = f"upload_{uuid4().hex[:12]}"
-        upload_path = await self.storage.save_uploaded_file(file_name, content, temp_job_id)
-        return await self.create_job_from_file(
-            upload_path,
-            file_name=file_name,
-            target_language=target_language,
-            translation_mode=translation_mode,
-            stream=stream,
-            chunk_size_chars=chunk_size_chars,
-            corpus_id=corpus_id,
-            use_corpus=use_corpus,
-            use_glossary=use_glossary,
-            use_style_examples=use_style_examples,
-            use_domain_prompt=use_domain_prompt,
-            translate_mode=translate_mode,
-            translation_level=translation_level,
-            speed_mode=speed_mode,
-        )
+        client_request_id: str = "",
+    ) -> tuple[JobRecord, bool]:
+        source_sha256 = hashlib.sha256(content).hexdigest()
+        fingerprint_payload = {
+            "source_sha256": source_sha256,
+            "target_language": target_language,
+            "translation_mode": translation_mode,
+            "stream": stream,
+            "chunk_size_chars": chunk_size_chars,
+            "corpus_id": corpus_id,
+            "use_corpus": use_corpus,
+            "use_glossary": use_glossary,
+            "use_style_examples": use_style_examples,
+            "use_domain_prompt": use_domain_prompt,
+            "translate_mode": translate_mode,
+            "translation_level": translation_level,
+            "speed_mode": speed_mode,
+        }
+        request_fingerprint = hashlib.sha256(
+            json.dumps(fingerprint_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        client_request_id = client_request_id.strip()
+
+        async with self._submission_lock:
+            if client_request_id:
+                existing = await self.storage.find_job_by_client_request_id(client_request_id)
+                if existing:
+                    if existing.request_fingerprint != request_fingerprint:
+                        raise IdempotencyConflictError("client_request_id 已用于不同的文件或翻译参数")
+                    return existing, True
+
+            temp_job_id = f"upload_{uuid4().hex[:12]}"
+            upload_path = await self.storage.save_uploaded_file(file_name, content, temp_job_id)
+            try:
+                job = await self.create_job_from_file(
+                    upload_path,
+                    file_name=file_name,
+                    target_language=target_language,
+                    translation_mode=translation_mode,
+                    stream=stream,
+                    chunk_size_chars=chunk_size_chars,
+                    corpus_id=corpus_id,
+                    use_corpus=use_corpus,
+                    use_glossary=use_glossary,
+                    use_style_examples=use_style_examples,
+                    use_domain_prompt=use_domain_prompt,
+                    translate_mode=translate_mode,
+                    translation_level=translation_level,
+                    speed_mode=speed_mode,
+                    client_request_id=client_request_id,
+                    source_sha256=source_sha256,
+                    request_fingerprint=request_fingerprint,
+                )
+            except Exception:
+                upload_path.unlink(missing_ok=True)
+                upload_path.with_suffix(f"{upload_path.suffix}.name.txt").unlink(missing_ok=True)
+                raise
+            return job, False
 
     async def get_job(self, job_id: str) -> JobRecord:
         return await self.storage.load_job(job_id)
@@ -217,6 +280,10 @@ class TranslationPipeline:
         return job
 
     async def start_job(self, job_id: str) -> JobRecord:
+        async with self._lifecycle_locks[job_id]:
+            return await self._start_job_locked(job_id)
+
+    async def _start_job_locked(self, job_id: str) -> JobRecord:
         job = await self.storage.load_job(job_id)
         if job.status in {"completed", "cancelled"}:
             return job
@@ -225,6 +292,7 @@ class TranslationPipeline:
         config = reload_config()
         if not config.tokenhub_api_key.strip():
             raise ValueError("模型接口的 API Key 未配置，请检查页面配置、.env 或 backend/config.local.json")
+        await self.storage.clear_result_manifest(job_id)
         job.config.model = config.model
         segments = await self.storage.load_segments(job_id)
         chunks = await self.storage.load_chunks(job_id)
@@ -244,6 +312,10 @@ class TranslationPipeline:
         return job
 
     async def resume_job(self, job_id: str) -> JobRecord:
+        async with self._lifecycle_locks[job_id]:
+            return await self._resume_job_locked(job_id)
+
+    async def _resume_job_locked(self, job_id: str) -> JobRecord:
         job = await self.storage.load_job(job_id)
         old_status = job.status
         print(f"[resume] job_id={job_id} old_status={old_status}")
@@ -252,17 +324,28 @@ class TranslationPipeline:
             job.cancel_requested = False
             job.last_error = ""
             job.current_segment_id = ""
+            job.current_chapter = ""
+            segments = await self.storage.load_segments(job_id)
+            chunks = await self.storage.load_chunks(job_id)
+            await self._recompute_job_progress(job, segments)
+            await export_outputs(self.storage, job, segments, chunks)
             await self.storage.save_job(job)
             return job
         if job.status == "cancelled":
             return job
         if not self._cleanup_finished_task(job_id):
             return job
+        await self.storage.clear_result_manifest(job_id)
         job.config.model = reload_config().model
         segments = await self.storage.load_segments(job_id)
         chunks = await self.storage.load_chunks(job_id)
         if all(segment.status == "success" for segment in segments):
             job.status = "completed"
+            job.current_segment_id = ""
+            job.current_chapter = ""
+            job.last_error = ""
+            await self._recompute_job_progress(job, segments)
+            await export_outputs(self.storage, job, segments, chunks)
             await self.storage.save_job(job)
             return job
         self.normalize_interrupted_segments(segments, chunks)
@@ -301,6 +384,10 @@ class TranslationPipeline:
         task.add_done_callback(lambda item, current_job_id=job_id: self._on_task_done(current_job_id, item))
         self.tasks[job_id] = task
 
+    def has_active_task(self, job_id: str) -> bool:
+        task = self.tasks.get(job_id)
+        return bool(task and not task.done())
+
     def _on_task_done(self, job_id: str, task: asyncio.Task[None]) -> None:
         try:
             exc = task.exception()
@@ -337,7 +424,13 @@ class TranslationPipeline:
         return True
 
     async def repair_stuck_job(self, job_id: str) -> JobRecord:
+        async with self._lifecycle_locks[job_id]:
+            return await self._repair_stuck_job_locked(job_id)
+
+    async def _repair_stuck_job_locked(self, job_id: str) -> JobRecord:
         job = await self.storage.load_job(job_id)
+        if not self._cleanup_finished_task(job_id):
+            raise JobAlreadyRunningError("任务仍在运行，不能执行卡住修复")
         if job.status == "completed":
             job.pause_requested = False
             job.cancel_requested = False
@@ -347,7 +440,6 @@ class TranslationPipeline:
             return job
         segments = await self.storage.load_segments(job_id)
         chunks = await self.storage.load_chunks(job_id)
-        self._cleanup_finished_task(job_id)
         self.normalize_interrupted_segments(segments, chunks)
         job.status = "paused" if any(segment.status != "success" for segment in segments) else "completed"
         job.pause_requested = False

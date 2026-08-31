@@ -37,7 +37,8 @@ export async function postJobAction(jobId, action, payload = null, options = {})
     const responseText = await response.text();
     let message = responseText;
     try {
-      message = JSON.parse(responseText).detail || responseText;
+      const detail = JSON.parse(responseText).detail;
+      message = typeof detail === 'object' ? detail.message || responseText : detail || responseText;
     } catch {
       // Keep plain-text errors unchanged.
     }

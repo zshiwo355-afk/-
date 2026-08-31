@@ -88,6 +88,9 @@ class JobRecord(BaseModel):
     file_name: str
     source_path: str
     target_language: str
+    client_request_id: str = ""
+    source_sha256: str = ""
+    request_fingerprint: str = ""
     status: JobStatus = "pending"
     total_segments: int
     total_chunks: int = 0

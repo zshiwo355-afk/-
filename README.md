@@ -4,6 +4,8 @@
 
 **连接你自己的模型，把 TXT / Markdown 长文按段翻译、对照检查，并在中断后继续。**
 
+浏览器里手动控制，或把书交给 Hermes Agent 自动执行。
+
 ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-API-009688?style=flat-square&logo=fastapi&logoColor=white)
 ![React](https://img.shields.io/badge/React-18-61DAFB?style=flat-square&logo=react&logoColor=20232A)
@@ -26,6 +28,7 @@
 | 可控翻译 | 提供忠实直译、自然阅读、专业表达、润色程度和翻译速度设置 |
 | 术语与风格 | 逐条添加固定译法、整体要求和风格参考，让长文表达更一致 |
 | 对照与导出 | 原文 / 译文双栏检查，可导出译文或双语版 TXT、Markdown |
+| Hermes Agent 控制 | 把书发给 Hermes，由 Agent 提交、查进度、续跑并下载译稿 |
 
 ## 从原稿到译稿
 
@@ -95,6 +98,8 @@ npm run dev
 3. **模型名称**：填写同一服务中的文本模型 ID。
 
 三项必须属于同一个服务。保存只代表写入本机，地址、权限、额度和模型兼容性会在首次翻译时验证。API Key 不会回显到页面。
+
+> 只填写 URL 和 API Key 还不够，模型名称也必须填写。项目不限定模型品牌，但接口必须兼容 OpenAI Chat Completions。
 
 ## 使用方法
 
@@ -184,6 +189,79 @@ python cli.py translate \
 
 </details>
 
+## Hermes Agent 自动翻译
+
+项目附带可直接安装的 Hermes Skill。Hermes 负责接收附件和控制任务，翻译器继续使用页面中配置的模型接口；API Key 不会交给 Skill，也不会出现在命令参数和输出中。任务完成后 Skill 会下载译稿，并在当前 Hermes 渠道支持附件时回传。
+
+```mermaid
+flowchart LR
+    A[发送 TXT / Markdown 给 Hermes] --> B[book-translator Skill]
+    B --> C[本地翻译任务 API]
+    C --> D[已配置的翻译模型]
+    C --> E[任务进度与结果清单]
+    E --> F[下载译稿 / 渠道支持时回传]
+```
+
+### 安装 Skill
+
+Web 项目本身支持 Python 3.10+；Hermes Skill 控制脚本需要 Python 3.11+。
+
+macOS / Linux：
+
+```bash
+SKILL_HOME="${HERMES_HOME:-$HOME/.hermes}/skills/book-translator"
+mkdir -p "$SKILL_HOME"
+cp -R integrations/hermes/book-translator/. "$SKILL_HOME/"
+```
+
+Windows PowerShell：
+
+```powershell
+$hermesRoot = if ($env:HERMES_HOME) { $env:HERMES_HOME } else { Join-Path $HOME ".hermes" }
+$skillHome = Join-Path $hermesRoot "skills\book-translator"
+New-Item -ItemType Directory -Force $skillHome | Out-Null
+Copy-Item -Recurse -Force integrations\hermes\book-translator\* $skillHome
+```
+
+然后重启 Hermes，或在 Hermes 中执行 `/reload-skills`。Skill 源码位于 [`integrations/hermes/book-translator`](./integrations/hermes/book-translator/)。
+
+验证本地翻译服务和模型配置：
+
+```bash
+python3 "${HERMES_HOME:-$HOME/.hermes}/skills/book-translator/scripts/book_translator.py" preflight
+```
+
+Windows PowerShell 使用：
+
+```powershell
+$hermesRoot = if ($env:HERMES_HOME) { $env:HERMES_HOME } else { Join-Path $HOME ".hermes" }
+python (Join-Path $hermesRoot "skills\book-translator\scripts\book_translator.py") preflight
+```
+
+看到 `"ok": true` 和 `"configured": true` 表示 Skill 已能连接本地服务，且模型配置已填写。
+
+用于 Agent 长任务时，后端请以单进程方式启动，不要使用开发环境的 `--reload`：
+
+```bash
+source .venv/bin/activate
+uvicorn backend.app:app --host 127.0.0.1 --port 8000 --workers 1
+```
+
+配置好模型接口后，把 `.txt` 或 `.md` 发给 Hermes，并告诉它：
+
+> 把这本书翻译成简体中文，使用忠实翻译；完成后把双语 Markdown 发给我。
+
+Hermes 会获得一个持久化的 `job_id`。相同文件和相同参数被重复提交时会复用原任务，避免因 Agent 重试重复调用模型；完成后只会下载带文件大小和 SHA-256 校验的结果。任务状态也可以随时查询、暂停、继续或取消。后端重启后，再次提交相同任务时会识别失去执行器的 `running` / `pausing` 状态并继续执行。
+
+> [!WARNING]
+> 当前 Agent 接口面向同机、单用户和单 worker 使用，后端必须继续绑定 `127.0.0.1`。接口目前没有公网鉴权，不要直接暴露到局域网或互联网。服务重启后需要 Hermes 重新提交同一任务或执行继续；只查询状态不会恢复任务。无人操作时后端不会自行恢复，也不会因重启自行产生模型费用。
+
+取消是终止操作。相同文件和参数会继续匹配已取消的任务；如果确实需要从头再翻一次，请在页面新建任务，或明确修改翻译参数后再交给 Hermes。
+
+模型连接或语料库内容的后续修改不会改变已经生成的任务身份。同一文件和相同显式参数仍会复用旧任务；需要按新模型或新语料重翻时，请在页面新建任务。
+
+当前 Skill 只接受 TXT 和 Markdown。PDF、EPUB、DOCX 需要先转换成文本或 Markdown；扫描版 PDF 还需要 OCR。
+
 ## 技术栈
 
 - 前端：React 18 + Vite 5
@@ -197,7 +275,7 @@ python cli.py translate \
 ```bash
 source .venv/bin/activate
 python -m unittest discover -s tests -v
-python -m compileall -q backend tests
+python -m compileall -q backend tests integrations/hermes/book-translator
 
 cd frontend
 npm run build

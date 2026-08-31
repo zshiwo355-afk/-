@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import re
 import shutil
 from pathlib import Path
@@ -8,7 +10,7 @@ import aiofiles
 
 from backend.translator.segmenter import is_heading_line
 from backend.translator.storage import FileStorage
-from backend.translator.validator import ChunkRecord, JobRecord, SegmentRecord
+from backend.translator.validator import ChunkRecord, JobRecord, SegmentRecord, utc_now_iso
 
 
 XML_CLEANUP_PATTERNS = [
@@ -24,6 +26,7 @@ LEADING_INDEX_RE = re.compile(r"^\s*((?:\d+(?:\.\d+)*)[.)]?)\s+")
 NON_ALNUM_RE = re.compile(r"[^0-9a-z]+")
 INVALID_FILENAME_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 EXPORTABLE_STATUSES = {"completed", "failed", "paused", "cancelled"}
+RESULT_MANIFEST_FILENAME = "result.json"
 
 
 def clean_translation_text(text: str) -> str:
@@ -44,6 +47,14 @@ def build_output_filenames(file_name: str) -> dict[str, str]:
         "bilingual.txt": f"{stem}_bilingual.txt",
         "bilingual.md": f"{stem}_bilingual.md",
     }
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        for block in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def _ordered_segments(segments: list[SegmentRecord]) -> list[SegmentRecord]:
@@ -211,6 +222,16 @@ async def export_outputs(
     segments: list[SegmentRecord],
     chunks: list[ChunkRecord],
 ) -> None:
+    async with storage.get_export_lock(job.job_id):
+        await _export_outputs_unlocked(storage, job, segments, chunks)
+
+
+async def _export_outputs_unlocked(
+    storage: FileStorage,
+    job: JobRecord,
+    segments: list[SegmentRecord],
+    chunks: list[ChunkRecord],
+) -> None:
     del chunks
     if job.status not in EXPORTABLE_STATUSES:
         return
@@ -222,7 +243,8 @@ async def export_outputs(
     outputs_dir = storage.job_outputs_dir(job.job_id)
     outputs_dir.mkdir(parents=True, exist_ok=True)
     output_filenames = build_output_filenames(job.file_name)
-    keep_names = set(output_filenames.values())
+    keep_names = {*output_filenames.values(), RESULT_MANIFEST_FILENAME}
+    await storage.clear_result_manifest(job.job_id)
     _clean_outputs_dir(storage, job.job_id, keep_names)
 
     translated_text = _build_translated_text(ordered_segments)
@@ -239,3 +261,26 @@ async def export_outputs(
         await file.write(bilingual_markdown)
 
     _clean_outputs_dir(storage, job.job_id, keep_names)
+    outputs = []
+    for output_type, filename in output_filenames.items():
+        path = outputs_dir / filename
+        outputs.append(
+            {
+                "type": output_type,
+                "filename": filename,
+                "size_bytes": path.stat().st_size,
+                "sha256": await asyncio.to_thread(_file_sha256, path),
+                "download_url": f"/api/jobs/{job.job_id}/download/{output_type}",
+            }
+        )
+    await storage.save_result_manifest(
+        job.job_id,
+        {
+            "job_id": job.job_id,
+            "status": job.status,
+            "completed_segments": job.completed_segments,
+            "total_segments": job.total_segments,
+            "generated_at": utc_now_iso(),
+            "outputs": outputs,
+        },
+    )
