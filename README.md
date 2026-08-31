@@ -50,7 +50,7 @@ flowchart LR
 ### 1. 获取项目
 
 ```bash
-git clone https://github.com/zshiwo355-afk/-.git text-book-translator
+git clone https://github.com/zshiwo355-afk/text-book-translator.git
 cd text-book-translator
 ```
 
