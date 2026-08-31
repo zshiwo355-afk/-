@@ -28,16 +28,20 @@ export async function uploadJob(file, options) {
 }
 
 export async function postJobAction(jobId, action, payload = null, options = {}) {
-  if (action === 'pause') {
-    console.trace('[api] pause called', { jobId, body: payload });
-  }
   const response = await fetch(`${API_BASE}/api/jobs/${jobId}/${action}`, {
     method: 'POST',
     headers: payload ? { 'Content-Type': 'application/json', ...(options.headers || {}) } : options.headers,
     body: payload ? JSON.stringify(payload) : undefined,
   });
   if (!response.ok) {
-    throw new Error(await response.text());
+    const responseText = await response.text();
+    let message = responseText;
+    try {
+      message = JSON.parse(responseText).detail || responseText;
+    } catch {
+      // Keep plain-text errors unchanged.
+    }
+    throw new Error(message);
   }
   return response.json();
 }
@@ -101,10 +105,22 @@ async function requestJson(url, options = {}) {
     ...options,
   });
   if (!response.ok) {
-    throw new Error(await response.text());
+    const responseText = await response.text();
+    let message = responseText;
+    try {
+      message = JSON.parse(responseText).detail || responseText;
+    } catch {
+      // Keep plain-text errors unchanged.
+    }
+    throw new Error(message);
   }
   return response.json();
 }
+
+export const settingsApi = {
+  get: () => requestJson('/api/settings'),
+  save: (payload) => requestJson('/api/settings', { method: 'PUT', body: JSON.stringify(payload) }),
+};
 
 export const corpusApi = {
   list: () => requestJson('/api/corpus'),
@@ -133,4 +149,3 @@ export const corpusApi = {
   },
   importJson: (payload) => requestJson('/api/corpus/import-json', { method: 'POST', body: JSON.stringify(payload) }),
 };
-

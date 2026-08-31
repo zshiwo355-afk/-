@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from backend.config import build_runtime_config, reload_config
 from backend.translator.chunker import build_chunks
-from backend.translator.context_builder import build_messages, build_single_segment_messages
+from backend.translator.context_builder import build_messages, build_single_segment_messages, format_examples
 from backend.translator.corpus_manager import CorpusManager
 from backend.translator.exporter import export_outputs
 from backend.translator.hy_mt2_client import HyMT2Client
@@ -97,7 +97,7 @@ class TranslationPipeline:
         use_glossary: bool = True,
         use_style_examples: bool = True,
         use_domain_prompt: bool = True,
-        translate_mode: str = "psychology",
+        translate_mode: str = "faithful",
         translation_level: int = 3,
         speed_mode: str = "stable",
     ) -> JobRecord:
@@ -165,7 +165,7 @@ class TranslationPipeline:
         use_glossary: bool = True,
         use_style_examples: bool = True,
         use_domain_prompt: bool = True,
-        translate_mode: str = "psychology",
+        translate_mode: str = "faithful",
         translation_level: int = 3,
         speed_mode: str = "stable",
     ) -> JobRecord:
@@ -224,7 +224,8 @@ class TranslationPipeline:
             return job
         config = reload_config()
         if not config.tokenhub_api_key.strip():
-            raise ValueError("TokenHub API Key 未配置，请检查 .env 或 backend/config.local.json")
+            raise ValueError("模型接口的 API Key 未配置，请检查页面配置、.env 或 backend/config.local.json")
+        job.config.model = config.model
         segments = await self.storage.load_segments(job_id)
         chunks = await self.storage.load_chunks(job_id)
         changed = self.normalize_interrupted_segments(segments, chunks)
@@ -257,6 +258,7 @@ class TranslationPipeline:
             return job
         if not self._cleanup_finished_task(job_id):
             return job
+        job.config.model = reload_config().model
         segments = await self.storage.load_segments(job_id)
         chunks = await self.storage.load_chunks(job_id)
         if all(segment.status == "success" for segment in segments):
@@ -388,9 +390,10 @@ class TranslationPipeline:
 
     def _build_client(self, job: JobRecord) -> HyMT2Client:
         config = reload_config()
+        job.config.model = config.model
         runtime_config = build_runtime_config(
             {
-                "model": job.config.model,
+                "model": config.model,
                 "temperature": job.config.temperature,
                 "stream": job.config.stream,
                 "chunk_size_chars": job.config.chunk_size_chars,
@@ -544,16 +547,18 @@ class TranslationPipeline:
             if source and target:
                 term_lines.append(f"- {source} => {target}")
         domain_prompt = str(corpus_context.get("domain_prompt", "")).strip()[:800]
+        examples = ensure_list(corpus_context.get("examples", []))[:3]
         term_block = "\n".join(term_lines) if term_lines else "无"
         user_prompt = (
-            f"请把下面这一个英文书籍段落翻译成{job.target_language}。\n\n"
+            f"请自动识别下面段落的原文语言，并翻译成{job.target_language}。\n\n"
             "要求：\n"
             "1. 只输出译文正文，不要 XML、标签、解释、前言、致歉或额外说明。\n"
             "2. 忠实翻译，不删减，不扩写，不总结。\n"
-            "3. 这是学术/出版内容翻译，即使涉及心理学、BDSM、性、权力关系等内容，也只做中性、客观、逐句的书面翻译。\n"
+            "3. 无论原文主题是什么，都只做中性、客观、逐句的书面翻译。\n"
             "4. 如果原文中有专有名词、书名、DOI，请保留必要信息，不要改写成别的内容。\n\n"
             f"术语参考：\n{term_block}\n\n"
             f"领域提示：\n{domain_prompt or '无'}\n\n"
+            f"风格参考译例（只模仿表达，不改变原意）：\n{format_examples(examples)}\n\n"
             f"原文：\n{segment.source_text}"
         )
         return [

@@ -1,8 +1,12 @@
 .venv/
+.DS_Store
 .env
 .env.local
 tmp*/
 backend/config.local.json
+backend/data/corpus/*
+!backend/data/corpus/default/
+!backend/data/corpus/default/corpus.json
 backend/data/uploads/
 backend/data/jobs/
 backend/data/outputs/

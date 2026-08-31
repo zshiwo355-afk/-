@@ -17,7 +17,7 @@ SHORT_HEADING_WORDS = {"contents", "preface", "introduction", "prologue", "epilo
 LIST_PATTERN = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+")
 BLOCKQUOTE_PATTERN = re.compile(r"^\s*>\s?")
 FENCE_PATTERN = re.compile(r"^\s*(```|~~~)")
-SENTENCE_SPLIT_PATTERN = re.compile(r"(?<=[\.\?\!;:])\s+")
+SENTENCE_SPLIT_PATTERN = re.compile(r"(?<=[。！？；：])|(?<=[\.\?\!;:])\s+")
 
 
 def normalize_text(text: str) -> str:

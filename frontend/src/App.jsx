@@ -5,8 +5,10 @@ import Toolbar from './components/Toolbar';
 import ProgressPanel from './components/ProgressPanel';
 import TranslationViewer from './components/TranslationViewer';
 import CorpusPanel from './components/CorpusPanel';
+import ApiSettings from './components/ApiSettings';
 
-const AUTH_FAILURE_MESSAGE = 'TokenHub API Key 无效或 base_url/域名不匹配，请检查 backend/config.local.json';
+const AUTH_FAILURE_CODE = 'API_AUTH_INVALID';
+const AUTH_FAILURE_MESSAGE = '模型接口不可用，请检查 URL、API Key 和模型名称';
 const DEFAULT_CONFIG = {
   targetLanguageChoice: '简体中文',
   customTargetLanguage: '',
@@ -18,7 +20,7 @@ const DEFAULT_CONFIG = {
   useGlossary: true,
   useStyleExamples: true,
   useDomainPrompt: true,
-  translateMode: 'psychology',
+  translateMode: 'faithful',
   translationLevel: 3,
   speedMode: 'stable',
 };
@@ -50,7 +52,7 @@ function configFromJob(job, currentConfig) {
     useGlossary: job.config.use_glossary ?? true,
     useStyleExamples: job.config.use_style_examples ?? true,
     useDomainPrompt: job.config.use_domain_prompt ?? true,
-    translateMode: job.config.translate_mode || 'psychology',
+    translateMode: job.config.translate_mode || 'faithful',
     translationLevel: job.config.translation_level || 3,
     speedMode: job.config.speed_mode || 'stable',
   };
@@ -91,20 +93,26 @@ export default function App() {
   const [statusMessage, setStatusMessage] = useState('');
   const [isBusy, setIsBusy] = useState(false);
   const [eventsVersion, setEventsVersion] = useState(0);
+  const [apiConfigured, setApiConfigured] = useState(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [isMobileLayout, setIsMobileLayout] = useState(() => window.matchMedia('(max-width: 900px)').matches);
   const eventSourceRef = useRef(null);
   const currentJobIdRef = useRef('');
   const lastSegmentsFetchAtRef = useRef(0);
   const pendingSegmentsFetchRef = useRef(null);
   const translationViewerRef = useRef(null);
+  const settingsCloseRef = useRef(null);
+  const settingsToggleRef = useRef(null);
 
-  const canStart = Boolean(file) || Boolean(job && !['completed', 'failed', 'cancelled'].includes(job.status));
-  const hasAuthConfigError = job?.last_error?.includes(AUTH_FAILURE_MESSAGE);
+  const isTaskLocked = ['running', 'pausing', 'paused'].includes(job?.status || '') || isBusy;
+  const canStart = apiConfigured !== false && (Boolean(file) || job?.status === 'pending');
+  const hasAuthConfigError = job?.last_error?.includes(AUTH_FAILURE_CODE);
   const hasIncompleteSegments = segments.some((segment) => segment.status !== 'success');
   const failedSegments = segments.filter((segment) => segment.status === 'failed');
   const firstFailedSegment = failedSegments[0] || null;
   const selectedFailedSegment = segments.find((segment) => segment.segment_id === selectedId && segment.status === 'failed') || null;
-  const canResume = ['paused', 'failed'].includes(job?.status || '') && hasIncompleteSegments;
-  const canRepair = Boolean(job?.job_id) && ['running', 'pausing', 'paused', 'failed'].includes(job?.status || '') && hasIncompleteSegments;
+  const canResume = apiConfigured !== false && ['paused', 'failed'].includes(job?.status || '') && hasIncompleteSegments;
+  const canRepair = apiConfigured !== false && Boolean(job?.job_id) && isRunningJobProbablyStuck(job) && hasIncompleteSegments;
   const isCompleted = job?.status === 'completed';
   const canDownload = Boolean(job?.job_id) && ['completed', 'failed', 'paused', 'cancelled'].includes(job?.status || '');
 
@@ -129,7 +137,7 @@ export default function App() {
       currentJobIdRef.current = jobId;
       setJob(restoredJob);
       setSegments(restoredSegments);
-      setFile({ name: restoredJob.file_name, size: 0 });
+      setFile(null);
       setConfig((current) => configFromJob(restoredJob, current));
       setActiveId(restoredJob.current_segment_id || '');
       setStatusMessage(
@@ -158,7 +166,37 @@ export default function App() {
     }
   }, []);
 
+  useEffect(() => {
+    const mediaQuery = window.matchMedia('(max-width: 900px)');
+    const syncLayout = () => setIsMobileLayout(mediaQuery.matches);
+    syncLayout();
+    mediaQuery.addEventListener('change', syncLayout);
+    return () => mediaQuery.removeEventListener('change', syncLayout);
+  }, []);
+
+  useEffect(() => {
+    if (!isMobileLayout || !settingsOpen) return undefined;
+    window.requestAnimationFrame(() => settingsCloseRef.current?.focus());
+    const handleEscape = (event) => {
+      if (event.key !== 'Escape') return;
+      setSettingsOpen(false);
+      window.requestAnimationFrame(() => settingsToggleRef.current?.focus());
+    };
+    document.addEventListener('keydown', handleEscape);
+    return () => document.removeEventListener('keydown', handleEscape);
+  }, [isMobileLayout, settingsOpen]);
+
+  const openSettings = () => setSettingsOpen(true);
+  const closeSettings = () => {
+    setSettingsOpen(false);
+    if (isMobileLayout) window.requestAnimationFrame(() => settingsToggleRef.current?.focus());
+  };
+
   const clearCurrentTask = () => {
+    if (isTaskLocked) {
+      setStatusMessage('请先停止当前任务，再新建任务。');
+      return;
+    }
     localStorage.removeItem(CURRENT_JOB_KEY);
     eventSourceRef.current?.close();
     currentJobIdRef.current = '';
@@ -190,7 +228,6 @@ export default function App() {
   };
 
   const uploadSelectedFile = async (nextFile, configOverride = config) => {
-    setIsBusy(true);
     setStatusMessage(`正在解析 ${nextFile.name}...`);
     try {
       const nextJob = await uploadJob(nextFile, {
@@ -220,8 +257,6 @@ export default function App() {
       setSegments([]);
       setStatusMessage(String(error));
       return null;
-    } finally {
-      setIsBusy(false);
     }
   };
 
@@ -277,6 +312,11 @@ export default function App() {
 
   const handleStart = async () => {
     if (!file && !job) return;
+    if (apiConfigured === false) {
+      openSettings();
+      setStatusMessage('请先完成模型接口配置。');
+      return;
+    }
     setIsBusy(true);
     try {
       let nextJob = job;
@@ -305,6 +345,11 @@ export default function App() {
 
   const handleAction = async (action) => {
     if (!job?.job_id) return;
+    if (action === 'resume' && apiConfigured === false) {
+      openSettings();
+      setStatusMessage('请先完成模型接口配置。');
+      return;
+    }
     setIsBusy(true);
     try {
       const nextJob = await postJobAction(job.job_id, action);
@@ -332,7 +377,6 @@ export default function App() {
     event.preventDefault();
     event.stopPropagation();
     if (!job?.job_id) return;
-    console.trace('[pause-click] user clicked pause');
     setIsBusy(true);
     try {
       const nextJob = await postJobAction(
@@ -354,6 +398,11 @@ export default function App() {
 
   const handleRepairAndResume = async () => {
     if (!job?.job_id) return;
+    if (apiConfigured === false) {
+      openSettings();
+      setStatusMessage('请先完成模型接口配置。');
+      return;
+    }
     setIsBusy(true);
     try {
       await postJobAction(job.job_id, 'repair-stuck');
@@ -373,17 +422,61 @@ export default function App() {
 
   return (
     <main className="app-shell">
-      <section className="app-top">
-        <div className="hero">
+      <aside
+        id="settings-panel"
+        className={`settings-sidebar ${settingsOpen ? 'open' : ''}`}
+        role={isMobileLayout ? 'dialog' : undefined}
+        aria-label="配置"
+        aria-modal={isMobileLayout && settingsOpen ? 'true' : undefined}
+        aria-hidden={isMobileLayout && !settingsOpen ? 'true' : undefined}
+      >
+        <div className="sidebar-brand">
+          <div className="brand-mark" aria-hidden="true">译</div>
           <div>
-            <p className="eyebrow">text-book-translator</p>
-            <h1>本地英文书籍翻译工具</h1>
-            <p className="hero-copy">上传 TXT / MD，按段落对齐翻译，支持语料库、暂停、继续和结果导出。</p>
+            <strong>长文翻译器</strong>
+            <span>本地长文翻译工作台</span>
           </div>
+          <button ref={settingsCloseRef} className="mobile-settings-close" type="button" aria-label="关闭配置" onClick={closeSettings}>×</button>
+        </div>
+
+        <ApiSettings
+          onStatus={setStatusMessage}
+          onAvailabilityChange={(configured) => {
+            setApiConfigured(configured);
+            if (!configured) openSettings();
+          }}
+        />
+
+        {!isCompleted ? (
+          <Toolbar config={config} onConfigChange={handleConfigChange} />
+        ) : null}
+
+        <p className="sidebar-note">配置与密钥只保存在这台电脑。开始翻译前不会向外部服务发送内容。</p>
+      </aside>
+
+      {settingsOpen ? <button className="settings-scrim" type="button" tabIndex={-1} aria-label="关闭配置" onClick={closeSettings} /> : null}
+
+      <section className="workspace" inert={isMobileLayout && settingsOpen ? '' : undefined} aria-hidden={isMobileLayout && settingsOpen ? 'true' : undefined}>
+        <header className="workspace-header">
+          <div>
+            <span className="section-kicker">翻译工作台</span>
+            <h1>长文翻译</h1>
+            <p>上传多语言文本，模型会自动识别原文语言，并按段落翻译成你选择的目标语言。</p>
+          </div>
+          <button
+            ref={settingsToggleRef}
+            className="mobile-settings-toggle"
+            type="button"
+            aria-controls="settings-panel"
+            aria-expanded={settingsOpen}
+            onClick={openSettings}
+          >
+            配置{apiConfigured === false ? ' · 待完善' : ''}
+          </button>
           <div className="download-panel">
             <div className="download-heading">
-              <span>结果导出</span>
-              <small>{canDownload ? '可直接下载当前输出结果' : '翻译结束、暂停或失败后可下载当前结果'}</small>
+              <span>导出结果</span>
+              <small>{canDownload ? '当前结果可下载' : '完成、暂停或失败后可用'}</small>
             </div>
             <div className="download-row">
               {DOWNLOAD_OPTIONS.map(({ fileType, label }) => (
@@ -394,59 +487,65 @@ export default function App() {
                   target="_blank"
                   rel="noreferrer"
                 >
-                  {label}
+                  {label.replace('下载', '')}
                 </a>
               ))}
             </div>
-            {job?.job_id ? <div className="download-hint">当前任务：{job.file_name || job.job_id}</div> : null}
           </div>
-        </div>
+        </header>
 
-        {hasAuthConfigError ? (
+        {hasAuthConfigError || apiConfigured === false ? (
           <div className="top-banner error-banner">
             <strong>{AUTH_FAILURE_MESSAGE}</strong>
-            <span>修复配置后，直接点击“继续”重试失败段落。</span>
+            <span>填写模型接口的 URL、API Key 和模型名称，保存后即可开始或继续任务。</span>
+            <button type="button" className="banner-action" onClick={openSettings}>打开配置</button>
           </div>
         ) : null}
 
         <DropZone
-          file={file}
-          onFileSelect={async (nextFile) => {
+          file={file || (job?.file_name ? { name: job.file_name, size: 0 } : null)}
+          disabled={isTaskLocked}
+          onFileSelect={(nextFile) => {
+            if (isTaskLocked) return;
+            localStorage.removeItem(CURRENT_JOB_KEY);
             setFile(nextFile);
             setJob(null);
             setSegments([]);
             setSelectedId('');
             setActiveId('');
             setFollowCurrent(true);
-            await uploadSelectedFile(nextFile);
+            setStatusMessage(`已选择 ${nextFile.name}。原文语言将自动识别，确认目标语言后点击“开始翻译”。`);
           }}
         />
 
-        {!isCompleted ? (
-          <Toolbar
-            config={config}
-            canStart={canStart && !isBusy}
-            jobStatus={job?.status || 'pending'}
-            resumeBlocked={false}
-            canResume={canResume}
-            onConfigChange={handleConfigChange}
-            onStart={handleStart}
-            onPause={handlePauseClick}
-            onResume={() => handleAction('resume')}
-            onCancel={() => handleAction('cancel')}
-          />
+        {file || job ? (
+          <div className="workspace-actions">
+            {!canResume && !['running', 'pausing', 'paused'].includes(job?.status || 'pending') ? (
+              <button className="primary-workspace-action" onClick={handleStart} disabled={!canStart || isBusy} type="button">
+                {isBusy ? '准备中…' : '开始翻译'}
+              </button>
+            ) : null}
+            {job?.status === 'running' ? (
+              <button className="primary-workspace-action" onClick={handlePauseClick} disabled={isBusy} type="button">暂停</button>
+            ) : null}
+            {canResume ? (
+              <button className="primary-workspace-action" onClick={() => handleAction('resume')} disabled={isBusy} type="button">继续</button>
+            ) : null}
+            {['running', 'pausing', 'paused', 'failed'].includes(job?.status || '') ? (
+              <button className="secondary-button" onClick={() => handleAction('cancel')} disabled={isBusy} type="button">停止</button>
+            ) : null}
+            {!isTaskLocked ? (
+              <button className="secondary-button" onClick={clearCurrentTask} type="button">
+                新建任务
+              </button>
+            ) : null}
+            {!isCompleted && canRepair ? (
+              <button className="secondary-button" onClick={handleRepairAndResume} disabled={isBusy} type="button">
+                修复并继续
+              </button>
+            ) : null}
+          </div>
         ) : null}
-
-        <div className="progress-actions">
-          <button className="secondary-button" onClick={clearCurrentTask} type="button">
-            清除当前任务 / 新建任务
-          </button>
-          {!isCompleted ? (
-            <button className="secondary-button" onClick={handleRepairAndResume} disabled={!canRepair || isBusy} type="button">
-              修复并继续
-            </button>
-          ) : null}
-        </div>
 
         <CorpusPanel config={config} jobStatus={job?.status || 'pending'} onConfigChange={handleConfigChange} onStatus={setStatusMessage} />
 
@@ -470,19 +569,18 @@ export default function App() {
             setStatusMessage(firstFailedSegment.error || `已定位失败段落 ${firstFailedSegment.segment_id}`);
           }}
         />
-      </section>
 
-      <TranslationViewer
-        ref={translationViewerRef}
-        segments={segments}
-        fileSelected={Boolean(job) || Boolean(file)}
-        selectedId={selectedId}
-        currentSegmentId={activeId || job?.current_segment_id || ''}
-        followCurrent={followCurrent}
-        status={job?.status || 'pending'}
-        onSelect={(segmentId) => setSelectedId(segmentId)}
-      />
+        <TranslationViewer
+          ref={translationViewerRef}
+          segments={segments}
+          fileSelected={Boolean(job) || Boolean(file)}
+          selectedId={selectedId}
+          currentSegmentId={activeId || job?.current_segment_id || ''}
+          followCurrent={followCurrent}
+          status={job?.status || 'pending'}
+          onSelect={(segmentId) => setSelectedId(segmentId)}
+        />
+      </section>
     </main>
   );
 }
-

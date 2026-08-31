@@ -3,14 +3,15 @@
 import json
 import sys
 from pathlib import Path
+from typing import Annotated
 
 from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, StringConstraints
 from sse_starlette.sse import EventSourceResponse
 
-from backend.config import reload_config
+from backend.config import reload_config, save_api_settings
 from backend.translator.corpus_manager import CorpusManager
 from backend.translator.exporter import build_output_filenames, export_outputs
 from backend.translator.pipeline import EventBroker, TranslationPipeline
@@ -48,16 +49,19 @@ class DomainPromptPayload(BaseModel):
     domain_prompt: str
 
 
+RequiredCorpusText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+
+
 class GlossaryPayload(BaseModel):
-    source: str
-    target: str
+    source: RequiredCorpusText
+    target: RequiredCorpusText
     note: str = ""
     enabled: bool = True
 
 
 class ExamplePayload(BaseModel):
-    source: str
-    target: str
+    source: RequiredCorpusText
+    target: RequiredCorpusText
     note: str = ""
     enabled: bool = True
 
@@ -76,6 +80,20 @@ class PausePayload(BaseModel):
     reason: str = "unknown"
 
 
+class ApiSettingsPayload(BaseModel):
+    base_url: str
+    api_key: str | None = None
+    model: RequiredCorpusText
+
+
+def _public_api_settings(config) -> dict[str, str | bool]:
+    return {
+        "base_url": config.tokenhub_base_url,
+        "model": config.model,
+        "has_api_key": bool(config.tokenhub_api_key.strip()),
+    }
+
+
 @app.on_event("startup")
 async def on_startup() -> None:
     await storage.ensure_base_dirs()
@@ -91,12 +109,21 @@ async def on_startup() -> None:
 
 @app.get("/api/config/check")
 async def check_config():
-    config = reload_config()
-    return {
-        "has_api_key": bool(config.tokenhub_api_key.strip()),
-        "base_url": config.tokenhub_base_url,
-        "model": config.model,
-    }
+    return _public_api_settings(reload_config())
+
+
+@app.get("/api/settings")
+async def get_api_settings():
+    return _public_api_settings(reload_config())
+
+
+@app.put("/api/settings")
+async def update_api_settings(payload: ApiSettingsPayload):
+    try:
+        config = save_api_settings(payload.base_url, payload.api_key, payload.model)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _public_api_settings(config)
 
 
 @app.post("/api/jobs/upload")
@@ -111,7 +138,7 @@ async def upload_job(
     use_glossary: bool = Form(True),
     use_style_examples: bool = Form(True),
     use_domain_prompt: bool = Form(True),
-    translate_mode: str = Form("psychology"),
+    translate_mode: str = Form("faithful"),
     translation_level: int = Form(3),
     speed_mode: str = Form("stable"),
 ):
@@ -159,7 +186,10 @@ async def create_corpus(payload: CorpusCreatePayload):
 
 @app.put("/api/corpus/{corpus_id}")
 async def save_corpus(corpus_id: str, payload: dict):
-    return corpus_manager.save_corpus(corpus_id, payload)
+    try:
+        return corpus_manager.save_corpus(corpus_id, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.delete("/api/corpus/{corpus_id}")
@@ -210,8 +240,11 @@ async def delete_example(corpus_id: str, example_id: str):
 
 @app.post("/api/corpus/{corpus_id}/import")
 async def import_corpus(corpus_id: str, file: UploadFile = File(...)):
-    data = json.loads((await file.read()).decode("utf-8-sig"))
-    return corpus_manager.save_corpus(corpus_id, data)
+    try:
+        data = json.loads((await file.read()).decode("utf-8-sig"))
+        return corpus_manager.save_corpus(corpus_id, data)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/api/corpus/import-json")
@@ -234,7 +267,7 @@ async def export_corpus(corpus_id: str):
 async def start_job(job_id: str):
     config = reload_config()
     if not config.tokenhub_api_key.strip():
-        raise HTTPException(status_code=400, detail="TokenHub API Key 未配置，请检查 .env 或 backend/config.local.json")
+        raise HTTPException(status_code=400, detail="API_NOT_CONFIGURED: 请先配置模型接口的 API Key")
     job = await pipeline.start_job(job_id)
     return {"ok": True, **job.model_dump()}
 

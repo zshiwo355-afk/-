@@ -9,7 +9,8 @@ from pydantic import BaseModel, Field
 JobStatus = Literal["pending", "running", "pausing", "paused", "completed", "failed", "cancelled"]
 SegmentStatus = Literal["pending", "running", "partial", "success", "failed"]
 ChunkStatus = Literal["pending", "running", "completed", "failed", "cancelled"]
-AUTH_FAILURE_MESSAGE = "TokenHub API Key 无效或 base_url/域名不匹配，请检查 backend/config.local.json"
+AUTH_FAILURE_CODE = "API_AUTH_INVALID"
+AUTH_FAILURE_MESSAGE = f"{AUTH_FAILURE_CODE}: API Key 无效，或接口地址与模型名称不匹配"
 
 
 def utc_now_iso() -> str:
@@ -39,7 +40,7 @@ class JobConfigSnapshot(BaseModel):
     use_glossary: bool = True
     use_style_examples: bool = True
     use_domain_prompt: bool = True
-    translate_mode: str = "psychology"
+    translate_mode: str = "faithful"
     translation_level: int = 3
     request_timeout_seconds: int = 180
     stream_timeout_seconds: int = 180

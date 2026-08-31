@@ -1,314 +1,208 @@
-# text-book-translator
+<div align="center">
 
-本地英文书籍翻译工具。上传 `.txt` / `.md` 文件后，通过腾讯云 TokenHub 的 `hy-mt2-pro` 模型进行段落级对齐翻译，默认输出简体中文，支持暂停、继续、断点续跑、SSE 实时状态和多格式结果导出。
+# 长文翻译器
 
-## 功能
+**连接你自己的模型，把 TXT / Markdown 长文按段翻译、对照检查，并在中断后继续。**
 
-- 本地网页拖拽上传 `.txt` / `.md`
-- 左右双栏原文 / 译文对照
-- 段落级 `segment_id` 对齐
-- 自动分段、分块，但前端不暴露 chunk 细节
-- 点击任意段落联动高亮和滚动
-- 支持暂停、继续、停止
-- 支持流式增量显示，失败时自动回退到非流式
-- 所有 chunk 完成后立即落盘，支持断点续跑
-- 可导出 `translated.md`、`bilingual.md`、`aligned.jsonl`、`translation_log.json`
+![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-API-009688?style=flat-square&logo=fastapi&logoColor=white)
+![React](https://img.shields.io/badge/React-18-61DAFB?style=flat-square&logo=react&logoColor=20232A)
+![Vite](https://img.shields.io/badge/Vite-5-646CFF?style=flat-square&logo=vite&logoColor=white)
 
-## 项目结构
+一个本地运行的多语言长文翻译工作台，适合书籍、学习资料、技术文档和双语内容整理。
 
-```text
-text-book-translator/
-  backend/
-    app.py
-    config.py
-    requirements.txt
-    config.example.json
-    config.local.json
-    translator/
-      __init__.py
-      text_loader.py
-      segmenter.py
-      chunker.py
-      context_builder.py
-      hy_mt2_client.py
-      pipeline.py
-      exporter.py
-      storage.py
-      validator.py
-    data/
-      uploads/
-      jobs/
-      outputs/
-  frontend/
-    package.json
-    index.html
-    src/
-      main.jsx
-      App.jsx
-      api.js
-      styles.css
-      components/
-        DropZone.jsx
-        Toolbar.jsx
-        TranslationViewer.jsx
-        ProgressPanel.jsx
-  cli.py
-  .gitignore
-  README.md
+</div>
+
+> [!IMPORTANT]
+> 任务、配置和结果保存在本机；开始翻译后，原文以及已启用的术语、整体要求和风格参考会发送到你配置的模型服务。
+
+## 为什么用它
+
+| 能力 | 你能得到什么 |
+| --- | --- |
+| 可配置模型接口 | 在页面填写 URL、API Key 和模型名称，不把应用绑定到单一服务商 |
+| 多语言原文 | 模型按提示判断原文语言，目标语言支持中文、日语、韩语或自定义 |
+| 长文续跑 | 按段保存进度，支持暂停、继续和失败重试，已完成段落不会重复请求 |
+| 可控翻译 | 提供忠实直译、自然阅读、专业表达、润色程度和翻译速度设置 |
+| 术语与风格 | 逐条添加固定译法、整体要求和风格参考，让长文表达更一致 |
+| 对照与导出 | 原文 / 译文双栏检查，可导出译文或双语版 TXT、Markdown |
+
+## 从原稿到译稿
+
+```mermaid
+flowchart LR
+    A[TXT / Markdown] --> B[自动分段]
+    B --> C[术语 + 整体要求 + 风格参考]
+    C --> D[兼容 OpenAI Chat Completions 的文本模型]
+    D --> E[段落对齐与进度落盘]
+    E --> F[译文 / 双语 TXT、Markdown]
 ```
 
-## 1. 创建 Python 虚拟环境
+## 快速开始
+
+环境要求：
+
+- Python 3.10+
+- Node.js 18+
+
+先运行 `python3 --version`（Windows 使用 `python --version`）确认版本。如果低于 3.10，请把下面命令中的解释器替换为本机已安装的 `python3.10`、`python3.11` 或更高版本。
+
+### 1. 获取项目
+
+```bash
+git clone https://github.com/zshiwo355-afk/-.git text-book-translator
+cd text-book-translator
+```
+
+### 2. 启动后端
 
 macOS / Linux：
 
 ```bash
 python3 -m venv .venv
-```
-
-如果本机 `python3` 低于 3.10，请改用实际可用的 3.10+ 解释器，例如：
-
-```bash
-python3.11 -m venv .venv
+source .venv/bin/activate
+pip install -r backend/requirements.txt
+uvicorn backend.app:app --reload --host 127.0.0.1 --port 8000
 ```
 
 Windows PowerShell：
 
 ```powershell
 python -m venv .venv
-```
-
-当前项目已在根目录创建 `.venv`，本次实际使用的是 `python3.11`。
-
-## 2. 安装 Python 依赖
-
-macOS / Linux：
-
-```bash
-source .venv/bin/activate
-pip install -r backend/requirements.txt
-```
-
-Windows PowerShell：
-
-```powershell
 .\.venv\Scripts\Activate.ps1
 pip install -r backend\requirements.txt
+uvicorn backend.app:app --reload --host 127.0.0.1 --port 8000
 ```
 
-## 3. 安装前端依赖
+### 3. 启动前端
+
+另开一个终端：
 
 ```bash
 cd frontend
-npm install
+npm ci
+npm run dev
 ```
 
-## 4. 填写项目根目录 `.env`
+打开 [http://127.0.0.1:5173](http://127.0.0.1:5173)。
 
-推荐直接修改项目根目录的 [.env](/Users/xx/ai/fanyi/text-book-translator/.env)。前端和后端都会读取这一个文件：
+### 4. 配置模型接口
+
+在页面左侧填写：
+
+1. **接口地址（URL）**：填写服务商提供的接口根地址，通常以 `/v1` 结尾，不要填写完整的 `/chat/completions`。
+2. **API Key**：填写该服务的访问密钥。
+3. **模型名称**：填写同一服务中的文本模型 ID。
+
+三项必须属于同一个服务。保存只代表写入本机，地址、权限、额度和模型兼容性会在首次翻译时验证。API Key 不会回显到页面。
+
+## 使用方法
+
+1. 配置模型接口。
+2. 拖入 UTF-8 编码的 `.txt` 或 `.md` 文件。
+3. 选择目标语言、表达方式和翻译速度。
+4. 按需添加术语、整体翻译要求或风格参考。
+5. 开始翻译，在双栏工作区检查原文与译文。
+6. 完成、暂停或失败后，导出当前可用结果。
+
+暂停会等待当前翻译批次结束并保存后生效；继续时从未完成位置恢复。更换模型配置后，新的连接会用于之后开始或继续的请求，已经完成的内容不会自动重翻。
+
+## 术语与风格控制
+
+- **术语**：一次添加一个“原文词语 → 固定译法”，适合人名、产品名和专业术语。
+- **整体要求**：例如“保持对白自然”“书名保留原文”，启用后随翻译批次发送。
+- **风格参考**：提供“原文 → 期望译文”，每个批次最多携带最近启用的 3 条参考。
+- **备份导入 / 导出**：页面导出的 `corpus.json` 可用于迁移或恢复语料库。
+
+语料库不会训练模型，只会作为当前翻译请求的上下文。导入功能接受本项目导出的 JSON 备份，不是待翻译书籍或 Excel 词表导入器。
+
+## 导出格式
+
+| 文件 | 内容 |
+| --- | --- |
+| `原文件名.txt` | 纯译文 TXT |
+| `原文件名.md` | 纯译文 Markdown |
+| `原文件名_bilingual.txt` | 原文与译文对照 TXT |
+| `原文件名_bilingual.md` | 带段落状态的原文与译文对照 Markdown |
+
+任务未全部完成时也可以导出；未完成段落会保留原文并标记状态，便于后续处理。
+
+## 模型兼容说明
+
+项目通过 OpenAI Python SDK 调用 `chat.completions`。可用模型至少需要：
+
+- 提供兼容 OpenAI Chat Completions 的接口；
+- 接受 `model`、`messages`、`temperature` 和 `stream` 参数；
+- 支持文本对话、多语言和足够的上下文长度；
+- 能较稳定地按照提示返回带段落 ID 的结构化内容。
+
+通用对话模型通常可以翻译，但并非所有“兼容接口”或所有模型都适合长文翻译。翻译质量、术语一致性、格式稳定性、速度和费用由你选择的模型服务决定。图片、语音和 Embedding 模型不能直接使用。
+
+## 数据与使用边界
+
+- 页面保存的模型配置位于 `backend/config.local.json`，手工环境变量配置位于根目录 `.env`；两者均已被 Git 忽略。
+- 上传文件、任务进度和导出结果默认保存在 `backend/data/`。
+- 翻译开始前不会发送文件内容；开始后，相关文本和启用的语料会发送到模型服务。
+- 模型服务可能产生费用，请查看对应服务商的计费、额度和隐私政策。
+- 当前版本面向本地单人工作流，不是带账号、权限和租户隔离的在线 SaaS。
+- 当前上传入口只接受 UTF-8 编码的 TXT 和 Markdown 文件。
+
+<details>
+<summary><strong>环境变量配置</strong></summary>
+
+页面配置是推荐方式，也可以复制 `.env.example` 为 `.env` 后手工配置：
 
 ```dotenv
-# Frontend
 VITE_API_BASE=http://127.0.0.1:8000
 
-# Backend
-TOKENHUB_API_KEY=your-real-api-key
-TOKENHUB_BASE_URL=https://tokenhub.tencentmaas.com/v1
-TRANSLATION_MODEL=hy-mt2-pro
+TOKENHUB_API_KEY=your-api-key
+TOKENHUB_BASE_URL=https://api.example.com/v1
+TRANSLATION_MODEL=your-model-id
 DEFAULT_TARGET_LANGUAGE=简体中文
 TRANSLATION_TEMPERATURE=0.1
-TRANSLATION_STREAM=true
+TRANSLATION_STREAM=false
 CHUNK_SIZE_CHARS=3500
 MAX_RETRIES=3
 ```
 
-说明：
+`TOKENHUB_*` 是当前版本保留的历史变量名，不代表只能使用某个服务商。通过页面保存后，页面中的 URL、API Key 和模型名称优先。
 
-- `VITE_API_BASE` 是前端请求后端的地址
-- `TOKENHUB_API_KEY` 是必填项
-- 其余项不改也可以，按默认值运行
+</details>
 
-如需保留旧方式，后端仍兼容 [backend/config.local.json](/Users/xx/ai/fanyi/text-book-translator/backend/config.local.json)，但 `.env` 的优先级更高。
+<details>
+<summary><strong>命令行翻译</strong></summary>
 
-## 5. 启动后端
-
-macOS / Linux：
+CLI 复用同一套模型配置、任务存储和续跑机制：
 
 ```bash
 source .venv/bin/activate
-uvicorn backend.app:app --reload --host 127.0.0.1 --port 8000
-```
-
-Windows PowerShell：
-
-```powershell
-.\.venv\Scripts\Activate.ps1
-uvicorn backend.app:app --reload --host 127.0.0.1 --port 8000
-```
-
-## 6. 启动前端
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-默认前端访问地址通常是 `http://127.0.0.1:5173`。如果后端地址变化，只改根目录 `.env` 里的 `VITE_API_BASE` 即可。
-
-## 7. 上传文件翻译
-
-1. 打开本地前端页面。
-2. 拖拽或点击选择 `.txt` / `.md` 文件。
-3. 选择目标语言、翻译模式、是否流式和 chunk size。
-4. 点击“开始翻译”。
-5. 页面会显示文件信息、任务状态、当前章节、当前 segment 和双栏对齐内容。
-
-## 8. 暂停 / 继续
-
-- 点击“暂停”后，任务状态先变为 `pausing`
-- 当前 chunk 完成并落盘后，状态变为 `paused`
-- 点击“继续”后，会从第一个 `pending` 或 `failed` 的位置恢复
-- 已成功的 segment 不会重复翻译
-
-## 9. CLI 翻译
-
-CLI 复用同一套 pipeline：
-
-```bash
-source .venv/bin/activate
-python cli.py translate --input ./book.txt --target-language 简体中文 --resume
-```
-
-更多参数示例：
-
-```bash
 python cli.py translate \
-  --input ./book.md \
-  --target-language 日语 \
-  --translation-mode 阅读优化 \
-  --chunk-size-chars 3200 \
-  --stream
+  --input ./book.txt \
+  --target-language 简体中文 \
+  --resume
 ```
 
-## 10. 下载结果
+</details>
 
-翻译任务完成、暂停或失败后，可以从页面右上角直接下载：
+## 技术栈
 
-- `translated.md`
-- `bilingual.md`
-- `aligned.jsonl`
-- `translation_log.json`
+- 前端：React 18 + Vite 5
+- 后端：FastAPI + Pydantic
+- 模型调用：OpenAI Python SDK
+- 实时状态：Server-Sent Events
+- 本地存储：JSON 文件
 
-文件实际写入位置为：
-
-```text
-backend/data/jobs/{job_id}/outputs/
-```
-
-## 11. OpenClaw 调用方式
-
-方式一：调用 CLI
+## 开发检查
 
 ```bash
-python cli.py translate --input ./book.txt --target-language 简体中文 --resume
+source .venv/bin/activate
+python -m unittest discover -s tests -v
+python -m compileall -q backend tests
+
+cd frontend
+npm run build
 ```
 
-方式二：调用本地 HTTP API
+## 反馈
 
-上传：
-
-```bash
-curl -X POST http://127.0.0.1:8000/api/jobs/upload \
-  -F "file=@./book.txt" \
-  -F "target_language=简体中文" \
-  -F "translation_mode=忠实翻译" \
-  -F "stream=true" \
-  -F "chunk_size_chars=3500"
-```
-
-开始：
-
-```bash
-curl -X POST http://127.0.0.1:8000/api/jobs/{job_id}/start
-```
-
-暂停：
-
-```bash
-curl -X POST http://127.0.0.1:8000/api/jobs/{job_id}/pause
-```
-
-继续：
-
-```bash
-curl -X POST http://127.0.0.1:8000/api/jobs/{job_id}/resume
-```
-
-停止：
-
-```bash
-curl -X POST http://127.0.0.1:8000/api/jobs/{job_id}/cancel
-```
-
-SSE：
-
-```bash
-curl http://127.0.0.1:8000/api/jobs/{job_id}/events
-```
-
-## 设计说明
-
-- `segment` 是前端展示和对齐的最小单位
-- `chunk` 是后端调用模型的最小单位
-- 请求中会把多个 segment 包装成带 `segment id` 的结构发给模型
-- 返回结果按 `segment_id` 解析并写回 `segments.json`
-- 每个 chunk 完成后立刻写入 `chunks/chunk_*.json`
-- 任务状态包含 `pending`、`running`、`pausing`、`paused`、`completed`、`failed`、`cancelled`
-
-## 本地检查
-
-项目已完成一次本地 Python 语法检查。前端依赖安装和 `vite build` 需要你在本机执行 `npm install` 后再跑。
-
-## Windows .env 位置
-
-Windows 下请把后端配置文件放在项目根目录：
-
-```text
-D:\ai\fanyi\-\.env
-```
-
-内容示例：
-
-```dotenv
-TOKENHUB_API_KEY=真实Key
-TOKENHUB_BASE_URL=https://tokenhub.tencentmaas.com/v1
-TOKENHUB_MODEL=hy-mt2-pro
-```
-
-后端也会读取：
-
-```text
-D:\ai\fanyi\-\backend\.env
-```
-
-## 语料库配置
-
-页面顶部有“语料库配置”折叠面板。打开后可以选择语料库、新建语料库、导入/导出 `corpus.json`、编辑领域提示、维护术语库和风格示例。新增术语时填写英文原文、推荐译法和说明，例如 `top => 支配方`、`bottom => 承受方`。新增风格示例时填写英文原文、中文译文和说明，用来约束后续 chunk 的表达风格。
-
-翻译配置区可以选择是否启用语料库、术语库、风格示例和领域提示。语料库不会训练模型，只会在每次请求时作为 prompt 上下文约束翻译；后端会按当前 chunk 原文做关键词匹配，最多放入 30 条相关术语和 3 条相关译例，不会把完整语料库一次性塞入 prompt。
-
-翻译模式：
-
-- `faithful` 忠实直译：不删减、不扩写、不解释，尽量保留原文结构。
-- `natural` 自然阅读：忠实基础上调整为自然中文。
-- `psychology` 心理学专业：适合心理学、精神分析、亲密关系、S/M、权力关系和边界类文本。
-- `wiki` 知识库入库：清楚、稳定、可检索，关键术语首次出现保留英文括注。
-- `bilingual_learning` 双语学习：关键术语保留英文括注，便于对照阅读。
-
-翻译程度 1-5：
-
-- 1 贴近原文：尽量保留原句式。
-- 2 忠实通顺：适度调整语序。
-- 3 自然中文：适合日常阅读。
-- 4 专业书籍：更像中文专业书籍表达。
-- 5 深度润色：更自然成熟，但不增加原文没有的信息。
+如果你遇到模型兼容、长文分段、语料导入或导出问题，欢迎通过 GitHub Issues 提交可复现信息。
